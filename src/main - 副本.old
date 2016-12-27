@@ -1,0 +1,48 @@
+//#include "ennOS.h"
+#include "ModBus_TCP.h"
+
+static int g_ModBusTaskID = 0;
+
+
+/*void InitENNModBus_Task()
+{
+	//hardware init
+
+	ENN_ErrorCode_t returnCode;
+    returnCode = ENNOS_CreateTask((ENN_U8 *)"ModBus", ENNOS_TASK_PRIORITY_MIDDLE, 64*1024, &g_ModBusTaskID, ENNOS_TASK_START, (ENNOS_TASKENTRY_f)InitENNMonitor_Task, NULL);
+	if (returnCode!= ENN_SUCCESS) 
+	{
+        printf("\nCreate EZWin task fail! ");
+    }
+}*/
+
+int main()
+{
+	//ENNOS_TASK_t taskID;
+	static unsigned int i = 100;
+	//hardware init
+
+	//InitENNModBus_Task();
+	printf("%s, %d\n",__FUNCTION__,__LINE__);
+	ENNModBus_TCP_Server();
+    //ENN_ErrorCode_t returnCode;
+    //returnCode = ENNOS_CreateTask("TCP_SERVER", ENNOS_TASK_PRIORITY_MIDDLE, 4*1024,&taskID, ENNOS_TASK_START, (void*)ENNModBus_TCP_Server, 0);
+	//if(ENN_SUCCESS != returnCode)
+	//{
+	//	printf("serial: create scan task fail\n");
+	//}
+	printf("%s, %d\n",__FUNCTION__,__LINE__);
+#if 0
+	while(1)
+	{
+		//ENNOS_DelayTask(10000);
+		printf("shanjianchao    %d\n",i);
+		printf("%s, %d\n",__FUNCTION__,__LINE__);
+		func();
+		usleep(70000);
+		printf("%s, %d\n",__FUNCTION__,__LINE__);
+	}	
+#endif
+
+	return 0;
+}

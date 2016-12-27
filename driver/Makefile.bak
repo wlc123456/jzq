@@ -1,0 +1,51 @@
+PWD=$(shell pwd)
+
+CROSS_COMPILE=arm-none-linux-gnueabi-
+CC=$(CROSS_COMPILE)gcc
+AR=$(CROSS_COMPILE)ar 
+LD=$(CROSS_COMPILE)ld
+STRIP=$(CROSS_COMPILE)strip
+CXX=$(CROSS_COMPILE)g++
+export CROSS_COMPILE CC AR LD
+RM = rm
+ECHO = echo
+ARFLAGS = -rcs
+
+export $(RM) $(ECHO) $(CC) $(AR)
+
+
+#include ./MakeInclude
+
+INCLUDES = -I./include
+MODULEDIR = ./src
+LIBNAME = ../lib/libdriver.a
+VPATH = ../lib $(MODULEDIR)
+SOURCE = $(wildcard $(addsuffix /*.c ,$(MODULEDIR)))
+OBJECT = $(notdir $(subst .c,.o,$(SOURCE)))
+
+
+.c.o:
+	@echo Compiling $@ ...
+	@echo Compiling $(INCLUDES) ...
+	@$(CC) -c $(CFLAGS) $(INCLUDES) $< -o $@
+	
+#$(OBJECT):%.o:%.c
+#	@echo Compiling $@ ...
+#	@$(CC) -c $(CFLAGS) $(INCLUDES) $< -o $@	
+	
+all:$(OBJECT)
+	@$(AR) $(ARFLAGS) $(LIBNAME) $^
+
+
+-include $(subst .o,.d,$(OBJECT))
+
+
+clean :
+	@echo Deleting files ...
+	@rm -f *.o 
+	@rm -f $(LIBNAME)
+
+
+
+.PHONY : all clean $(SRC)
+

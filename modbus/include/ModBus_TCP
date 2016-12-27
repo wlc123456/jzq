@@ -1,0 +1,140 @@
+
+#ifndef _MODBUSTCP_H_
+#define _MODBUSTCP_H_
+
+
+#ifdef __cplusplus
+extern "C"
+{
+#endif
+
+#define TCP_BUF_SIZE 260
+
+#define MB_FUNC_NONE							( 0x00 )
+#define MB_FUNC_READ_COILS						( 0x01 )
+#define MB_FUNC_READ_DISCRETE_INPUTS			( 0x02 )
+#define MB_FUNC_READ_HOLDING_REGISTER			( 0x03 )
+#define MB_FUNC_WRITE_SINGLE_COIL				( 0x05 )
+#define MB_FUNC_WRITE_MULTIPLE_REGISTERS        ( 0x10 )
+#define MB_FUNC_ERROR              				( 0x80 )
+//#define MB_FUNC_READ_INPUT_REGISTER				( 4 )
+//#define MB_FUNC_WRITE_REGISTER					( 6 )
+//#define MB_FUNC_DIAG_READ_EXCEPTION				( 7 )
+//#define MB_FUNC_DIAG_DIAGNOSTIC					( 8 )
+//#define MB_FUNC_DIAG_GET_COM_EVENT_CNT          ( 11 )
+//#define MB_FUNC_DIAG_GET_COM_EVENT_LOG          ( 12 )
+//#define MB_FUNC_WRITE_MULTIPLE_COILS			( 15 )
+//#define MB_FUNC_OTHER_REPORT_SLAVEID			( 17 )
+//#define MB_FUNC_READWRITE_MULTIPLE_REGISTERS  	( 23 )
+
+
+typedef struct tag_TCP_DATA_LIST
+{
+	ENN_U32	u32Socket;
+	//ENN_U32	u32IP;
+	//ENN_U16	u16Port;
+	ENN_U16	u16Len;
+	ENN_U16	u16Pos;
+	ENN_U8	aData[TCP_BUF_SIZE];
+	struct tag_TCP_DATA_LIST *next;
+}TCP_DATA_LIST;
+
+
+#define UART_CHANNEL_MAX_NUM		8
+
+typedef enum tag_UART_STATUS
+{
+	UART_IDEL,
+	UART_BUSY,
+}UART_STATUS;
+
+typedef enum tag_UART_CHANNEL
+{
+	UART_CHANNEL_0 = 0,
+	UART_CHANNEL_1,
+	UART_CHANNEL_2,
+	UART_CHANNEL_3,
+	UART_CHANNEL_4,
+	UART_CHANNEL_5,
+	UART_CHANNEL_6,
+	UART_CHANNEL_7,
+}UART_CHANNEL;
+
+
+typedef struct dataQ_frame
+{
+	ENN_U8 	*p_buf;            //buf start pointer
+    ENN_U8 	*p_data;
+    ENN_U32 length;           //len of data
+    ENN_U32 	status;
+}DATAQ_FRAME;
+
+typedef  struct  modbusMsg
+{
+	ENN_U32	u32Socket;
+    ENN_U16 u16MBTID; //only tcp mode used;
+    ENN_U8 	u8MBAddr;
+    ENN_U8 	u8MBFunCode;
+	ENN_U16 u16RegAddr;
+	ENN_U16 u16RegNum;
+    //DATAQ_FRAME *mbPDU;
+    //TimeoutTimer timeoutTimer;
+    struct modbusMsg *next;
+}ModbusMsg;
+
+typedef  struct  MBMsg_TCP_HEAD
+{
+	ENN_U32 u32IdelTime;
+	ENN_U32	u32Socket;
+    ENN_U16 u16MBTID; //only tcp mode used;
+    ENN_U8 	u8MBAddr;
+    ENN_U8 	u8MBFunCode;
+	ENN_U8 *pData;
+	ENN_U16 u16Len;
+	ENN_U16 u16RegNum;
+	ENN_U8 	u8WaitFlag;
+	ENN_U8 	u8UARTChannel;
+}MBMsg_TCP_HEAD;
+
+typedef  struct  tag_MODBUS_INFO
+{
+	//ENN_U8 	u8UARTChannel;
+	ENN_U32	u32Socket;
+	ENN_U16 u16Offset;
+	ENN_U32 u32IdelTime;
+}MODBUS_INFO;
+
+
+typedef struct tag_Slave_List
+{
+	ENN_U8	u8UART_Channel;
+	ENN_U8	u8Slave_Addr;
+	ENN_U16	u16Reg_Addr;
+	ENN_U16	u16Reg_Num;
+	ENN_U16 u16Offset;
+	struct tag_Slave_List *next;
+}Slave_List;
+
+typedef struct tag_Master_List
+{
+	ENN_U32	u32Socket;
+    ENN_U16 u16MBTID; //only tcp mode used;
+    ENN_U8 	u8MBAddr;
+    ENN_U8 	u8MBFunCode;
+	ENN_U16 u16RegNum;
+	ENN_U16 u16Len;
+	ENN_U8 *pData;
+	Slave_List *pSlave_List;
+	struct tag_Master_List *next;
+}Master_List;
+
+
+#ifdef __cplusplus
+}
+
+#endif /* __cplusplus */
+
+
+#endif     /* _CYAPI_H_ */
+
+

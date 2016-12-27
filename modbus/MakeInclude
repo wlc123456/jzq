@@ -1,0 +1,14 @@
+APPINC = -I./include -I../driver/include -I../protocol/include		
+
+
+INCLUDES += $(APPINC)
+
+#CFLAGS += -fsigned-char -O2 -DDEBUG
+
+
+
+define PRO_RULE_DEPEND_C
+        $(CC) $(CFLAGS) $(INCLUDES) -MM $< \
+                | sed 's/.*\.o[ :]*/$(subst /,\/,$@) : /g' > $(@:%.o=%.d) 
+                
+endef

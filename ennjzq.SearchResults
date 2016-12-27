@@ -1,0 +1,14 @@
+---- register_number Matches (13 in 1 files) ----
+Client.c (bacnet\client):int register_number = 0;
+Client.c (bacnet\client):	Bacnet_Register_List_Table[register_number].Object_Type = object_data_add->object_type ;
+Client.c (bacnet\client):	Bacnet_Register_List_Table[register_number].Object_Instance = object_data_add->object_instance;
+Client.c (bacnet\client):	Bacnet_Register_List_Table[register_number].Present_Value = object_data_add->value;
+Client.c (bacnet\client):	Bacnet_Register_List_Table[register_number].Units = object_data_add->units;
+Client.c (bacnet\client):	debug_printf("%s,%d, %d,%d,%u,%f,%d\n",__FUNCTION__,__LINE__,register_number,
+Client.c (bacnet\client):										Bacnet_Register_List_Table[register_number].Object_Type,
+Client.c (bacnet\client):										Bacnet_Register_List_Table[register_number].Object_Instance ,
+Client.c (bacnet\client):										Bacnet_Register_List_Table[register_number].Present_Value,
+Client.c (bacnet\client):										Bacnet_Register_List_Table[register_number].Units);
+Client.c (bacnet\client):	register_number++;
+Client.c (bacnet\client):			Bacnet_Register_List_Table_Number = register_number;
+Client.c (bacnet\client):			register_number = 0;

@@ -1,0 +1,1846 @@
+/**************************** (C) COPYRIGHT 2014 ENNO ****************************
+ * 文件名	：ModBus_TCP.c
+ * 描述	：          
+ * 时间     	：
+ * 版本    	：
+ * 变更	：
+ * 作者	：  
+**********************************************************************************/	
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <linux/tcp.h>
+
+
+#include "ennAPI.h"
+#include "ennSocket.h"
+#include "ModBus_TCP.h"
+#include "ModBus_Slave_Table.h"
+
+
+#ifdef __cplusplus
+#if __cplusplus
+    extern "C" {
+#endif  /* __cplusplus */
+#endif  /* __cplusplus */
+
+#define MAXCLINE 10
+
+#define MB_TCP_TID          0
+#define MB_TCP_PID          2
+#define MB_TCP_LEN          4
+#define MB_TCP_UID          6
+#define MB_TCP_FUNC         7
+
+#define MB_TCP_PROTOCOL_ID  0   /* 0 = Modbus Protocol */
+
+#define MB_TCP_ADU_EVENT_LEN 	2
+#define MB_TCP_ADU_PROTOCOL_LEN 2
+#define MB_TCP_ADU_DATALEN_LEN 	2
+#define MB_TCP_ADU_UNIT_LEN 	1
+
+
+
+#define MB_TCP_ADU_HEAD_LEN     7
+#define MB_TCP_ADU_SIZE_MAX     (MB_TCP_ADU_HEAD_LEN + 249)
+
+ENN_S32 fd[MAXCLINE]; //连接的fd
+
+ENN_S32 conn_amount; //当前的连接数
+
+//TCP_DATA_LIST *gTCP_DATA_LIST_RECV_HEAD = NULL;
+//TCP_DATA_LIST *gTCP_DATA_LIST_SEND_HEAD = NULL;
+
+//ModbusMsg *gModbusMsg_Head = NULL;
+
+ENN_U16 gSTAR_ADDR = 0;
+static ENNOS_MSG_t gModBusTaskQueueID = 0;
+
+extern FunCode_List *gFunCode_List_head;
+
+#undef MAX
+#define MAX(x,y) ((x) > (y) ? (x) : (y))
+
+
+//0X01,0X02,0X03,0X05,0X10	
+/*static xMBFunctionHandler xFuncHandlers[] = 
+{
+    {MB_FUNC_READ_COILS, 				eMBFuncReadCoils},
+    {MB_FUNC_READ_DISCRETE_INPUTS, 		eMBFuncReadDiscreteInputs},
+	{MB_FUNC_READ_HOLDING_REGISTER, 	eMBFuncReadHoldingRegister},
+	{MB_FUNC_WRITE_SINGLE_COIL, 		eMBFuncWriteCoil},
+	{MB_FUNC_WRITE_MULTIPLE_REGISTERS, 	eMBFuncWriteMultipleHoldingRegister},
+};
+
+#define NumFuncHandler    (sizeof(xFuncHandlers)/sizeof(xMBFunctionHandler))
+
+static xMBFunctionHandler* GetFuncHandler(ModbusMsg *mbMsg)
+{
+	ENN_U8 mbFunctionCode;
+	ENN_U32 i;
+	xMBFunctionHandler *functionHandler = NULL;
+
+	mbFunctionCode = mbMsg->mbFunctionCode;
+	
+	for(i=0;i<NumFuncHandler;i++)
+	{
+		if(xFuncHandlers[i].ucFunctionCode == mbFunctionCode)
+		{
+			functionHandler = &xFuncHandlers[i];
+		}
+	}
+
+	return functionHandler;
+}*/
+
+void showclient()
+{
+	int i;
+	ENNTRACE("client amount:%d\n", conn_amount);
+	for(i=0; i<MAXCLINE; i++)
+	{
+		ENNTRACE("[%d]:%d ",i,fd[i]);
+	}
+	ENNTRACE("\n\n");
+}
+
+const ENN_U16 wCRCTalbeAbs[] =
+{
+0x0000, 0xCC01, 0xD801, 0x1400, 
+0xF001, 0x3C00, 0x2800, 0xE401, 
+0xA001, 0x6C00, 0x7800, 0xB401, 
+0x5000, 0x9C01, 0x8801, 0x4400, 
+};
+
+
+/*  低位字节的 CRC  值  */
+static const ENN_U8 auchCRCHi[] = {
+0x00, 0xC1, 0x81, 0x40, 0x01, 0xC0, 0x80, 0x41, 0x01, 0xC0,
+0x80, 0x41, 0x00, 0xC1, 0x81, 0x40, 0x01, 0xC0, 0x80, 0x41,
+0x00, 0xC1, 0x81, 0x40, 0x00, 0xC1, 0x81, 0x40, 0x01, 0xC0,
+0x80, 0x41, 0x01, 0xC0, 0x80, 0x41, 0x00, 0xC1, 0x81, 0x40,
+0x00, 0xC1, 0x81, 0x40, 0x01, 0xC0, 0x80, 0x41, 0x00, 0xC1,
+0x81, 0x40, 0x01, 0xC0, 0x80, 0x41, 0x01, 0xC0, 0x80, 0x41,
+0x00, 0xC1, 0x81, 0x40, 0x01, 0xC0, 0x80, 0x41, 0x00, 0xC1,
+0x81, 0x40, 0x00, 0xC1, 0x81, 0x40, 0x01, 0xC0, 0x80, 0x41,
+0x00, 0xC1, 0x81, 0x40, 0x01, 0xC0, 0x80, 0x41, 0x01, 0xC0,
+0x80, 0x41, 0x00, 0xC1, 0x81, 0x40, 0x00, 0xC1, 0x81, 0x40,
+0x01, 0xC0, 0x80, 0x41, 0x01, 0xC0, 0x80, 0x41, 0x00, 0xC1,
+0x81, 0x40, 0x01, 0xC0, 0x80, 0x41, 0x00, 0xC1, 0x81, 0x40,
+0x00, 0xC1, 0x81, 0x40, 0x01, 0xC0, 0x80, 0x41, 0x01, 0xC0,
+0x80, 0x41, 0x00, 0xC1, 0x81, 0x40, 0x00, 0xC1, 0x81, 0x40,
+0x01, 0xC0, 0x80, 0x41, 0x00, 0xC1, 0x81, 0x40, 0x01, 0xC0,
+0x80, 0x41, 0x01, 0xC0, 0x80, 0x41, 0x00, 0xC1, 0x81, 0x40,
+0x00, 0xC1, 0x81, 0x40, 0x01, 0xC0, 0x80, 0x41, 0x01, 0xC0,
+0x80, 0x41, 0x00, 0xC1, 0x81, 0x40, 0x01, 0xC0, 0x80, 0x41,
+0x00, 0xC1, 0x81, 0x40, 0x00, 0xC1, 0x81, 0x40, 0x01, 0xC0,
+0x80, 0x41, 0x00, 0xC1, 0x81, 0x40, 0x01, 0xC0, 0x80, 0x41,
+0x01, 0xC0, 0x80, 0x41, 0x00, 0xC1, 0x81, 0x40, 0x01, 0xC0,
+0x80, 0x41, 0x00, 0xC1, 0x81, 0x40, 0x00, 0xC1, 0x81, 0x40,
+0x01, 0xC0, 0x80, 0x41, 0x01, 0xC0, 0x80, 0x41, 0x00, 0xC1,
+0x81, 0x40, 0x00, 0xC1, 0x81, 0x40, 0x01, 0xC0, 0x80, 0x41,
+0x00, 0xC1, 0x81, 0x40, 0x01, 0xC0, 0x80, 0x41, 0x01, 0xC0,
+0x80, 0x41, 0x00, 0xC1, 0x81, 0x40
+};
+
+/* Table of CRC values for low-order byte */
+static const ENN_U8 auchCRCLo[] =
+{
+0x00, 0xC0, 0xC1, 0x01, 0xC3, 0x03, 0x02, 0xC2, 0xC6, 0x06,
+0x07, 0xC7, 0x05, 0xC5, 0xC4, 0x04, 0xCC, 0x0C, 0x0D, 0xCD,
+0x0F, 0xCF, 0xCE, 0x0E, 0x0A, 0xCA, 0xCB, 0x0B, 0xC9, 0x09,
+0x08, 0xC8, 0xD8, 0x18, 0x19, 0xD9, 0x1B, 0xDB, 0xDA, 0x1A,
+0x1E, 0xDE, 0xDF, 0x1F, 0xDD, 0x1D, 0x1C, 0xDC, 0x14, 0xD4,
+0xD5, 0x15, 0xD7, 0x17, 0x16, 0xD6, 0xD2, 0x12, 0x13, 0xD3,
+0x11, 0xD1, 0xD0, 0x10, 0xF0, 0x30, 0x31, 0xF1, 0x33, 0xF3,
+0xF2, 0x32, 0x36, 0xF6, 0xF7, 0x37, 0xF5, 0x35, 0x34, 0xF4,
+0x3C, 0xFC, 0xFD, 0x3D, 0xFF, 0x3F, 0x3E, 0xFE, 0xFA, 0x3A,
+0x3B, 0xFB, 0x39, 0xF9, 0xF8, 0x38, 0x28, 0xE8, 0xE9, 0x29,
+0xEB, 0x2B, 0x2A, 0xEA, 0xEE, 0x2E, 0x2F, 0xEF, 0x2D, 0xED,
+0xEC, 0x2C, 0xE4, 0x24, 0x25, 0xE5, 0x27, 0xE7, 0xE6, 0x26,
+0x22, 0xE2, 0xE3, 0x23, 0xE1, 0x21, 0x20, 0xE0, 0xA0, 0x60,
+0x61, 0xA1, 0x63, 0xA3, 0xA2, 0x62, 0x66, 0xA6, 0xA7, 0x67,
+0xA5, 0x65, 0x64, 0xA4, 0x6C, 0xAC, 0xAD, 0x6D, 0xAF, 0x6F,
+0x6E, 0xAE, 0xAA, 0x6A, 0x6B, 0xAB, 0x69, 0xA9, 0xA8, 0x68,
+0x78, 0xB8, 0xB9, 0x79, 0xBB, 0x7B, 0x7A, 0xBA, 0xBE, 0x7E,
+0x7F, 0xBF, 0x7D, 0xBD, 0xBC, 0x7C, 0xB4, 0x74, 0x75, 0xB5,
+0x77, 0xB7, 0xB6, 0x76, 0x72, 0xB2, 0xB3, 0x73, 0xB1, 0x71,
+0x70, 0xB0, 0x50, 0x90, 0x91, 0x51, 0x93, 0x53, 0x52, 0x92,
+0x96, 0x56, 0x57, 0x97, 0x55, 0x95, 0x94, 0x54, 0x9C, 0x5C,
+0x5D, 0x9D, 0x5F, 0x9F, 0x9E, 0x5E, 0x5A, 0x9A, 0x9B, 0x5B,
+0x99, 0x59, 0x58, 0x98, 0x88, 0x48, 0x49, 0x89, 0x4B, 0x8B,
+0x8A, 0x4A, 0x4E, 0x8E, 0x8F, 0x4F, 0x8D, 0x4D, 0x4C, 0x8C,
+0x44, 0x84, 0x85, 0x45, 0x87, 0x47, 0x46, 0x86, 0x82, 0x42,
+0x43, 0x83, 0x41, 0x81, 0x80, 0x40
+};
+
+/*  函数以  unsignedshort  类型返回  CRC  */
+ENN_U16 CRC16_Ex(ENN_U8 *pData, ENN_U16 DataLen)//(puchMsg, usDataLen)
+{
+	ENN_U8 uchCRCHi = 0xFF;  	/*CRC  的高字节初始化 */
+	ENN_U8 uchCRCLo = 0xFF;  	/*CRC  的低字节初始化 */
+	ENN_U32 uIndex = 0;  		/*CRC  查询表索引*/
+	ENN_U8 *pTemp = NULL;
+
+	ENNAPI_ASSERT((NULL != pData) && (0 != DataLen));
+	
+	pTemp = pData;
+	while (DataLen--)  					/*  完成整个报文缓冲区*/
+	{
+		uIndex = uchCRCLo^ *pTemp++ ;  	/*  计算  CRC */
+		uchCRCLo = uchCRCHi ^ auchCRCHi[uIndex];
+		uchCRCHi = auchCRCLo[uIndex];
+	}
+
+	return (uchCRCHi << 8 |uchCRCLo);
+} 
+
+
+ENN_U16 CRC16(ENN_U8 *pData, ENN_U16 DataLen)
+{
+    ENN_U16 wCRC = 0xFFFF;
+    ENN_U16 i;
+    ENN_U8 u8Data;
+
+    for(i = 0; i < DataLen; i++)
+    {
+        u8Data = *pData++;
+        wCRC = wCRCTalbeAbs[(u8Data ^ wCRC) & 15] ^ (wCRC >> 4);
+        wCRC = wCRCTalbeAbs[((u8Data >> 4) ^ wCRC) & 15] ^ (wCRC >> 4);
+    }
+
+    return wCRC;
+}
+
+
+ENN_U8 aMBTCP_HEAD[7];
+ENN_BOOL bflag = ENN_TRUE;
+ENN_BOOL bReadflag = ENN_FALSE;
+
+ENN_S32	g32Socket = 0;
+ENN_ErrorCode_t ENNModBus_TCP_Send(ENN_S32 socket, ENN_U8 *pbuf, ENN_S32 Len)
+{
+	ENN_U8 *pSendBuf = NULL;
+	ENN_U16 u16Len = 0;
+	ENN_U16 u16TCPLen = 0;
+	int num;
+	int  i = 0;
+
+	ENNAPI_ASSERT((NULL != pbuf) && (0 !=  Len));
+
+	/*u16Len = Len - 2 + 7;
+	u16TCPLen = Len - 2 + 1;
+	ENNTRACE("Len = %d\n", Len);
+	ENNTRACE("u16Len = %d\n", u16Len);
+	ENNTRACE("u16TCPLen = %d\n", u16TCPLen);
+	pSendBuf = (ENN_U8 *)malloc(u16Len);
+	if(NULL == pSendBuf)
+	{
+		bflag = ENN_TRUE;
+		return ENN_FAIL;
+	}
+	memset(pSendBuf, 0, u16Len);
+	memcpy(pSendBuf, aMBTCP_HEAD, 4);
+	pSendBuf[4] = (ENN_U8)(u16TCPLen >> 8);
+	pSendBuf[5] = (ENN_U8)(u16TCPLen & 0x00FF);
+	memcpy(pSendBuf+6, pbuf, Len - 2);
+
+	for(i = 0; i < u16Len; i++)
+		ENNTRACE("%2.2x ", pSendBuf[i]);
+	ENNTRACE("\n");
+	num = send(g32Socket, pSendBuf, u16Len, 0);
+	ENNTRACE("num = %d\n", num);
+	bflag = ENN_TRUE;*/
+	num = send(socket, pbuf, Len, 0);
+	ENNTRACE("num = %d\n", num);
+	if(num <= 0)
+	{
+		return ENN_FAIL;
+	}
+
+	return ENN_SUCCESS;
+}
+
+#define READ_DATA_LEN 256
+#if 0
+void Test_Rx()
+{
+	ENN_U8 tmp[READ_DATA_LEN];
+	int i = 0;
+	ENN_S32 len;
+	ENN_U16 u16CRC;
+
+	ENNTRACE("\n%s, %d\n",__FUNCTION__,__LINE__);
+	while(1)
+	{
+		ENNTRACE("\n%s, %d\n",__FUNCTION__,__LINE__);
+		if(bReadflag)
+		{
+			ENNTRACE("\n%s, %d\n",__FUNCTION__,__LINE__);
+			memset(tmp, 0, READ_DATA_LEN);
+			len = UART_Read(UART4, tmp, READ_DATA_LEN);
+			if(len > 0)
+			{
+			ENNTRACE("len = %d\n",len);
+			ENNTRACE("\n%s, %d\n",__FUNCTION__,__LINE__);
+			for(i = 0; i < len; i++)
+				ENNTRACE(" %2.2x", tmp[i]);
+			ENNTRACE("\n");
+
+			ENNModBus_TCP_Send(tmp, len);
+			bReadflag = ENN_FALSE;
+			//ENNOS_DelayTask(100);
+			}
+			else
+			{
+				ENNTRACE("\n%s, %d\n",__FUNCTION__,__LINE__);
+			}
+		}
+		else
+		{
+			ENNTRACE("\n%s, %d\n",__FUNCTION__,__LINE__);
+			ENNOS_DelayTask(100);
+		}
+	}
+}
+#else
+extern ENN_S32 gChannel3_Handle;
+void Test_Rx()
+{
+	ENN_U8 tmp[READ_DATA_LEN];
+	int i = 0;
+	ENN_S32 len;
+	ENN_U16 u16CRC;
+	fd_set fs_read;
+	struct timeval tv_timeout;
+	ENN_S32 iRet;
+
+	ENNTRACE("\n%s, %d\n",__FUNCTION__,__LINE__);
+	while(1)
+	{
+		ENNTRACE("\n%s, %d\n",__FUNCTION__,__LINE__);
+		FD_ZERO(&fs_read);
+        FD_SET (gChannel3_Handle, &fs_read);
+
+        tv_timeout.tv_sec = 0;
+        tv_timeout.tv_usec = 1000000;
+        iRet = ENNSock_Select(gChannel3_Handle + 1, (ENNSock_fd_set *)&fs_read, NULL, NULL, (ENNSock_Timeval *)&tv_timeout);
+		if(iRet < 0)
+		{
+			ENNTRACE("	[%s %d select error!!]\r\n",__FUNCTION__, __LINE__);
+			break;
+		}
+		else if(0 == iRet)	/* 指定的时间到*/
+		{
+			ENNTRACE("[%s %d timeout!]\r\n",__FUNCTION__, __LINE__);
+			continue;
+		}
+		else
+		{
+			ENNTRACE("waiting for read data from UART............\n");
+			if(FD_ISSET(gChannel3_Handle, &fs_read))
+			{
+				len = UART_Read(CHANNEL3, tmp, READ_DATA_LEN);
+				ENNTRACE("len = %d\n",len);
+				ENNTRACE("the read data is:\n");
+				for(i = 0; i < len; i++)
+					ENNTRACE("%2.2x ", tmp[i]);
+				ENNTRACE("\n");
+
+				//ENNModBus_TCP_Send(tmp, len);
+				bReadflag = ENN_FALSE;
+			}
+			else
+			{
+				ENNTRACE("\n%s, %d\n",__FUNCTION__,__LINE__);
+			}
+		}
+	}
+}
+#endif
+
+ENN_ErrorCode_t ENNModBus_TCP_Receive(ENN_S32 socket, ENN_U8 *pbuf, ENN_S32 RecvLen)
+{
+	ENN_U8 *pTemp = NULL;
+	ENN_U8 *pSendBuf = NULL;
+	ENN_U16 u16Len = 0;
+	ENN_S32 s32RetLen = 0;
+	ENN_U16 u16CRC = 0;
+	int i = 0;
+	
+	ENNAPI_ASSERT((NULL != pbuf) && (7 < RecvLen));
+	ENNTRACE("%s, %d\n",__FUNCTION__,__LINE__);
+
+	/*while(!bflag)
+	{
+		ENNTRACE("%s, %d\n",__FUNCTION__,__LINE__);
+		ENNOS_DelayTask(100);
+	}*/
+
+	bflag = ENN_FALSE;
+	pTemp = pbuf;
+	memset(aMBTCP_HEAD, 0, 7);
+	g32Socket = socket;
+	memcpy(aMBTCP_HEAD, pbuf, 7);
+	u16Len = ((ENN_U16)(pTemp[4])) << 8;
+	u16Len |= (ENN_U16)(pTemp[5]);
+
+	pSendBuf = (ENN_U8 *)malloc(u16Len + 2);
+	if(NULL == pSendBuf)
+	{
+		bflag = ENN_TRUE;
+		return ENN_FAIL;
+	}
+	memset(pSendBuf, 0, (u16Len + 2));
+	memcpy(pSendBuf, (pTemp + 6), u16Len);
+	u16CRC = CRC16(pSendBuf, u16Len);
+	ENNTRACE("u16CRC = 0x%x\n",u16CRC);
+	ENNTRACE("u16Len = %d\n",u16Len);
+	pSendBuf[u16Len] = (ENN_U8)(u16CRC & 0x00FF);
+	pSendBuf[u16Len+1] = (ENN_U8)(u16CRC >> 8);
+	for(i = 0; i < (u16Len + 2); i++)
+			ENNTRACE(" %2.2x", pSendBuf[i]);
+	ENNTRACE("\n");
+	s32RetLen = UART_Write(CHANNEL3, pSendBuf, (u16Len + 2));
+	ENNTRACE("s32RetLen = %d\n",s32RetLen);
+
+	bReadflag = ENN_TRUE;
+
+	return ENN_SUCCESS;
+}
+
+//static ENN_U8 SendBuf[17];
+//ENN_U32	count = 0;
+
+ENN_ErrorCode_t ENNModBus_Msg_Rx_Ex(void)
+{
+	ENN_U8 data[512];
+	ENN_U16 len = 0;	
+	ENN_ErrorCode_t returnCode = ENN_SUCCESS;
+	DATAQ_FRAME stDATAQ_FRAME;
+	ENN_U8 *pData = NULL;
+	ENN_U8 u8DataLen = 0;
+	ENN_U32 u32Len = 0;
+	ENN_U32 Len = 0;
+	ENN_U8 u8FunCode = 0;
+	ENN_U16 u16RegAddr = 0;
+	ENN_U16 u16RegNum = 0;
+	ENN_U8 *pResData = NULL;
+	ENN_U8 u8SlaveAddr = 0;
+	ENN_U8 *pSendBuf = NULL;
+	ENN_U8 i = 0;
+	ENN_U8 u8Num = 0;
+	ENN_U8 u8ModBusTCPLen = 0;
+	ENN_S32 err = 0;
+	ENN_U8 DataLen = 0;
+	ENN_U8 TcpLen = 0;
+
+	while(1)
+	{
+		ENNTRACE("%s, %d\n",__FUNCTION__,__LINE__);
+		returnCode = ENNOS_ReceiveMessage(gModBusTaskQueueID, ENNOS_TIMEOUT_INFINITY, (ENN_VOID *)&stDATAQ_FRAME);
+		if(ENN_SUCCESS != returnCode)
+		{
+			ENNTRACE("\nReceive MSG Queue fail!\n");
+			continue;
+		}
+		ENNTRACE("%s, %d\n",__FUNCTION__,__LINE__);
+
+		pData = stDATAQ_FRAME.p_data;
+		u32Len = stDATAQ_FRAME.length;
+		if((NULL == pData) || (0 == u32Len))
+		{
+			continue;
+		}
+
+		for(i = 0; i < u32Len; i++)
+			ENNTRACE("%2.2x ", pData[i]);
+		ENNTRACE("\n");
+
+		if(u32Len > 7)
+		{
+			Len = 7;
+			u8SlaveAddr = pData[6];
+			u8FunCode = pData[Len++];
+
+			ENNTRACE("%s, %d, %d\n",__FUNCTION__,__LINE__, u8FunCode);
+			switch(u8FunCode)
+			{
+				case MB_FUNC_READ_COILS:
+				case MB_FUNC_READ_DISCRETE_INPUTS:
+					break;
+				case MB_FUNC_READ_HOLDING_REGISTER:
+					u16RegAddr = ((ENN_U16)(pData[Len++])) << 8;
+					u16RegAddr |= (ENN_U16)(pData[Len++]);
+					
+					u16RegNum = ((ENN_U16)(pData[Len++])) << 8;
+					u16RegNum |= (ENN_U16)(pData[Len++]);
+					
+					pResData = ENNModBus_Serch_FunCode_Data(u8FunCode, u16RegAddr, u16RegNum, &u8DataLen);
+					if((NULL != pResData) && (0 != u8DataLen))
+					{
+						u8Num = u8DataLen + 1 + 1 + 1;
+						u8ModBusTCPLen = u8DataLen;
+						pSendBuf = (ENN_U8 *)malloc(7 + 1 + 1 + u8DataLen);
+						if(NULL != pSendBuf)
+						{
+							memcpy(pSendBuf, pData, 7);
+							pSendBuf[4] = (ENN_U8)(u8Num>>8);
+							pSendBuf[5] = (ENN_U8)(u8Num & 0x00FF);
+							*(pSendBuf+7) = u8FunCode;
+							pSendBuf[8] = u8ModBusTCPLen;
+							memcpy(pSendBuf+9, pResData, u8ModBusTCPLen);
+							
+							ENNTRACE("%s, %d, %d\n",__FUNCTION__,__LINE__,returnCode);
+
+							for(i = 0; i < (u8DataLen + 1 + 7 + 1); i++)
+								ENNTRACE("%2.2x ", pSendBuf[i]);
+							ENNTRACE("\n");
+
+							err = ENNSock_SocketSend(stDATAQ_FRAME.frame_net_info.u32Socket, pSendBuf, u8DataLen + 1 + 7 + 1, 1);
+							if(err <= 0)
+							{
+								free(pSendBuf);
+								pSendBuf = NULL;
+							}
+							//ENNModBus_TCP_Send(stDATAQ_FRAME.frame_net_info.u32Socket, pSendBuf, u8DataLen + 1 + 7 + 1);
+						}
+					}
+					break;
+				case MB_FUNC_READ_HISTORY_DATA:
+					u16RegNum = ((ENN_U16)(pData[Len++])) << 8;
+					u16RegNum |= (ENN_U16)(pData[Len++]);
+
+					ENNTRACE("%s, %d, %d\n",__FUNCTION__,__LINE__,u16RegNum);
+					
+					pResData = (ENN_U8 *)malloc(u16RegNum);
+					if(NULL != pResData)
+					{
+						memset(pResData, 0, u16RegNum);
+						returnCode = ENNModBus_Get_History_Data(pResData, u16RegNum, &DataLen);
+						ENNTRACE("%s, %d, %d, %d\n",__FUNCTION__,__LINE__,u16RegNum, returnCode);
+						if((ENN_SUCCESS != returnCode) || (0 == DataLen))
+						{
+							free(pResData);
+							pResData = NULL;
+							u16RegNum = 0;
+
+							return ENN_FAIL;
+						}
+						ENNTRACE("%s, %d, %d\n",__FUNCTION__,__LINE__,u16RegNum);
+						
+						u8Num = DataLen + 2 + 1 + 1;
+						TcpLen = 7 + 1 + 2 + DataLen;
+						pSendBuf = (ENN_U8 *)malloc(TcpLen);
+						if(NULL != pSendBuf)
+						{
+							memcpy(pSendBuf, pData, 7);
+							pSendBuf[4] = (ENN_U8)(u8Num >> 8);
+							pSendBuf[5] = (ENN_U8)(u8Num & 0x00FF);
+							*(pSendBuf+7) = u8FunCode;
+							pSendBuf[8] = (ENN_U8)(DataLen >> 8);
+							pSendBuf[9] = (ENN_U8)(DataLen & 0x00FF);
+							for(i = 0; i < DataLen; i++)
+								ENNTRACE("%2.2x ", pResData[i]);
+							ENNTRACE("\n");
+							if(NULL != pResData)
+							{
+								memcpy(pSendBuf+10, pResData, DataLen);
+							}
+							
+							//ENNTRACE("%s, %d, %d\n",__FUNCTION__,__LINE__,returnCode);
+
+							for(i = 0; i < TcpLen; i++)
+								ENNTRACE("%2.2x ", pSendBuf[i]);
+							ENNTRACE("\n");
+
+							err = ENNSock_SocketSend(stDATAQ_FRAME.frame_net_info.u32Socket, pSendBuf, TcpLen, 1);
+							ENNTRACE("%s, %d, %d\n",__FUNCTION__,__LINE__,err);
+							perror("send history data: ");
+							if(err <= 0)
+							{
+								free(pSendBuf);
+								pSendBuf = NULL;
+							}
+							
+							//exit(0);
+							//ENNModBus_TCP_Send(stDATAQ_FRAME.frame_net_info.u32Socket, pSendBuf, u8DataLen + 1 + 7 + 1);
+						}
+					}
+				default:
+					break;
+			}
+
+#if 0
+			returnCode = ENNModBus_Request(CHANNEL1, u8SlaveAddr, u8FunCode, u16RegAddr, u16RegNum);
+			if(ENN_SUCCESS != returnCode)
+			{
+				continue;
+			}
+			returnCode = ENNModBus_Select(0, 100);
+			ENNTRACE("%s, %d, %d\n",__FUNCTION__,__LINE__,returnCode);
+			if(ENN_SUCCESS == returnCode)
+			{
+				len = ENNModBus_Response(CHANNEL1, &u8SlaveAddr, &u8FunCode, data);
+				ENNTRACE("%s, %d, len = %d, u8FunCode = %d\n",__FUNCTION__,__LINE__,len, u8FunCode);
+				ENNTRACE("u8FunCode = %d\n", u8FunCode);
+				if(len > 0)
+				{
+					u16Num = len + 1 + 1 + 1;
+					pSendBuf = (ENN_U8 *)malloc(len + 1 + 7 + 1);
+					if(NULL != pSendBuf)
+					{
+						memcpy(pSendBuf, pData, 7);
+						pSendBuf[4] = (ENN_U8)(u16Num>>8);
+						pSendBuf[5] = (ENN_U8)(u16Num & 0x00FF);
+						*(pSendBuf+7) = u8FunCode;
+						pSendBuf[8] = len;
+						memcpy(pSendBuf+9, data, len);
+						
+						ENNTRACE("%s, %d, %d\n",__FUNCTION__,__LINE__,returnCode);
+
+						for(i = 0; i < (len + 1 + 7 + 1); i++)
+							ENNTRACE("%2.2x ", pSendBuf[i]);
+						ENNTRACE("\n");
+
+						ENNModBus_TCP_Send(stDATAQ_FRAME.frame_net_info.u32Socket, pSendBuf, len + 1 + 7 + 1);
+					}
+				}
+			}
+#endif
+		}
+	}
+	
+	return ENN_SUCCESS;
+}
+
+
+ENN_ErrorCode_t ENNModBus_Msg_Rx(void)
+{
+	ENN_U8 data[512];
+	ENN_U16 len = 0;	
+	ENN_ErrorCode_t returnCode = ENN_SUCCESS;
+	DATAQ_FRAME stDATAQ_FRAME;
+	ENN_U8 *pBuf = NULL;
+	ENN_U8 *pData = NULL;
+	ENN_U16 u16DataLen = 0;
+	ENN_U32 u32Len = 0;
+	ENN_U32 Len = 0;
+	ENN_U8 u8FunCode = 0;
+	ENN_U16 u16RegAddr = 0;
+	ENN_U16 u16RegNum = 0;
+	ENN_U8 *pResData = NULL;
+	ENN_U8 u8SlaveAddr = 0;
+	ENN_U8 *pSendBuf = NULL;
+	ENN_U8 i = 0;
+	ENN_U16 u16Num = 0;
+	ENN_U16 u16ModBusTCPLen = 0;
+	ENN_S32 err = 0;
+	ENN_U16 u16CoilLen = 0;
+	ENN_U8 u8Bytes = 0;
+	ENN_U8 u8ExceptionCode = 0;
+	ENN_U16 u16InputValue = 0;
+
+	while(1)
+	{
+		u16DataLen = 0;
+		ENNTRACE("%s, %d\n",__FUNCTION__,__LINE__);
+		returnCode = ENNOS_ReceiveMessage(gModBusTaskQueueID, ENNOS_TIMEOUT_INFINITY, (ENN_VOID *)&stDATAQ_FRAME);
+		if(ENN_SUCCESS != returnCode)
+		{
+			ENNTRACE("\nReceive MSG Queue fail!\n");
+			continue;
+		}
+		ENNTRACE("%s, %d\n",__FUNCTION__,__LINE__);
+
+		pData = stDATAQ_FRAME.p_data;
+		u32Len = stDATAQ_FRAME.length;
+		if((NULL == pBuf) || (0 == u32Len))
+		{
+			continue;
+		}
+
+		if(u32Len > 7)
+		{
+			Len = 7;
+			u8SlaveAddr = pData[6];
+			u8FunCode = pData[Len++];
+
+			switch(u8FunCode)
+			{
+				case MB_FUNC_READ_COILS:
+					//free(pData);
+					//pData = NULL;
+					//break;
+				case MB_FUNC_READ_DISCRETE_INPUTS:
+					u16RegAddr = ((ENN_U16)(pData[Len++])) << 8;
+					u16RegAddr |= (ENN_U16)(pData[Len++]);
+					
+					u16RegNum = ((ENN_U16)(pData[Len++])) << 8;
+					u16RegNum |= (ENN_U16)(pData[Len++]);
+					u16CoilLen = u16RegNum/8;
+					if(0 != u16RegNum%8)
+					{
+						u16CoilLen++;
+					}
+
+					if((u16RegNum < 0x0001) || (u16RegNum > 0x07D0))
+					{
+						//0x03
+						u16Num = 2 + 1;
+						u16ModBusTCPLen = 7 + 1 + 1;
+						pSendBuf = (ENN_U8 *)malloc(u16ModBusTCPLen);
+						if(NULL == pSendBuf)
+						{
+							free(pBuf);
+							pBuf = NULL;
+							continue;
+							//return ENN_FAIL;
+						}
+						memcpy(pSendBuf, pData, 7);
+						free(pBuf);
+						pBuf = NULL;
+						pSendBuf[4] = (ENN_U8)(u16Num >> 8);
+						pSendBuf[5] = (ENN_U8)(u16Num & 0x00FF);
+						*(pSendBuf+7) = u8FunCode | 0x80;
+						*(pSendBuf+8) = 0x03;
+						
+						ENNTRACE("%s, %d, %d\n",__FUNCTION__,__LINE__,u16ModBusTCPLen);
+
+						for(i = 0; i < u16ModBusTCPLen; i++)
+							ENNTRACE("%2.2x ", pSendBuf[i]);
+						ENNTRACE("\n");
+
+						returnCode = ENNModBus_TCP_Send(stDATAQ_FRAME.frame_net_info.u32Socket, pSendBuf, u16ModBusTCPLen);
+						if(ENN_SUCCESS != returnCode)
+						{
+							free(pSendBuf);
+							pSendBuf = NULL;
+						}
+						continue;
+					}
+
+					pResData = (ENN_U8 *)malloc(u16CoilLen);
+					if(NULL == pResData)
+					{
+						free(pBuf);
+						pBuf = NULL;
+						continue;
+						//return ENN_FAIL;
+					}
+					memset(pResData, 0, u16CoilLen);
+					
+					returnCode = ENNModBus_Read_CoilStatus(u8FunCode, u16RegAddr, u16RegNum, &u16CoilLen, pResData);
+					for(i = 0; i < u16CoilLen; i++)
+							ENNTRACE("%2.2X ",pResData[i]);
+					ENNTRACE("\n");
+					if(ENN_SUCCESS != returnCode)
+					{
+						free(pBuf);
+						pBuf = NULL;
+						free(pResData);
+						pResData = NULL;
+
+						u16Num = 2 + 1;
+						u16ModBusTCPLen = 7 + 1 + 1;
+						pSendBuf = (ENN_U8 *)malloc(u16ModBusTCPLen);
+						if(NULL == pSendBuf)
+						{
+							free(pBuf);
+							pBuf = NULL;
+							continue;
+							//return ENN_FAIL;
+						}
+						memcpy(pSendBuf, pData, 7);
+						free(pBuf);
+						pBuf = NULL;
+						pSendBuf[4] = (ENN_U8)(u16Num >> 8);
+						pSendBuf[5] = (ENN_U8)(u16Num & 0x00FF);
+						*(pSendBuf+7) = u8FunCode | 0x80;
+						*(pSendBuf+8) = 0x02;
+						
+						ENNTRACE("%s, %d, %d\n",__FUNCTION__,__LINE__,u16ModBusTCPLen);
+
+						for(i = 0; i < u16ModBusTCPLen; i++)
+							ENNTRACE("%2.2x ", pSendBuf[i]);
+						ENNTRACE("\n");
+
+						returnCode = ENNModBus_TCP_Send(stDATAQ_FRAME.frame_net_info.u32Socket, pSendBuf, u16ModBusTCPLen);
+						if(ENN_SUCCESS != returnCode)
+						{
+							free(pSendBuf);
+							pSendBuf = NULL;
+						}
+						continue;
+						//return returnCode;
+					}
+					
+					u16Num = u16CoilLen + 1 + 1 + 1;
+					u16ModBusTCPLen = 7 + 1 + 1 + u16CoilLen;
+					pSendBuf = (ENN_U8 *)malloc(u16ModBusTCPLen);
+					if(NULL == pSendBuf)
+					{
+						free(pBuf);
+						pBuf = NULL;
+						free(pResData);
+						pResData = NULL;
+						continue;
+						//return returnCode;
+					}
+					memcpy(pSendBuf, pData, 7);
+					free(pBuf);
+					pBuf = NULL;
+					pSendBuf[4] = (ENN_U8)(u16Num>>8);
+					pSendBuf[5] = (ENN_U8)(u16Num & 0x00FF);
+					*(pSendBuf+7) = u8FunCode;
+					pSendBuf[8] = (ENN_U8)u16CoilLen;
+					memcpy(pSendBuf+9, pResData, u16CoilLen);
+
+					free(pResData);
+					pResData = NULL;
+					
+					ENNTRACE("%s, %d, %d\n",__FUNCTION__,__LINE__,returnCode);
+
+					for(i = 0; i < (u16CoilLen + 1 + 7 + 1); i++)
+						ENNTRACE("%2.2x ", pSendBuf[i]);
+					ENNTRACE("\n");
+
+					/*err = ENNSock_SocketSend(stDATAQ_FRAME.frame_net_info.u32Socket, pSendBuf, u16ModBusTCPLen, 1);
+					if(err <= 0)
+					{
+						free(pSendBuf);
+						pSendBuf = NULL;
+					}*/
+					returnCode = ENNModBus_TCP_Send(stDATAQ_FRAME.frame_net_info.u32Socket, pSendBuf, u16ModBusTCPLen);
+					if(ENN_SUCCESS != returnCode)
+					{
+						free(pSendBuf);
+						pSendBuf = NULL;
+					}
+					break;
+				case MB_FUNC_READ_HOLDING_REGISTER:
+				case MB_FUNC_READ_INPUT_REGISTER:
+					u16RegAddr = ((ENN_U16)(pData[Len++])) << 8;
+					u16RegAddr |= (ENN_U16)(pData[Len++]);
+					
+					u16RegNum = ((ENN_U16)(pData[Len++])) << 8;
+					u16RegNum |= (ENN_U16)(pData[Len++]);
+					ENNTRACE("%s, %d, %d, %d\n",__FUNCTION__,__LINE__,u16RegAddr, u16RegNum);
+
+					if((u16RegNum < 0x0001) || (u16RegNum > 0x007D))
+					{
+						//0x03
+						u16Num = 2 + 1;
+						u16ModBusTCPLen = 7 + 1 + 1;
+						pSendBuf = (ENN_U8 *)malloc(u16ModBusTCPLen);
+						if(NULL == pSendBuf)
+						{
+							free(pBuf);
+							pBuf = NULL;
+							continue;
+							//return ENN_FAIL;
+						}
+						memcpy(pSendBuf, pData, 7);
+						free(pBuf);
+						pBuf = NULL;
+						pSendBuf[4] = (ENN_U8)(u16Num >> 8);
+						pSendBuf[5] = (ENN_U8)(u16Num & 0x00FF);
+						*(pSendBuf+7) = u8FunCode | 0x80;
+						*(pSendBuf+8) = 0x03;
+						
+						ENNTRACE("%s, %d, %d\n",__FUNCTION__,__LINE__,u16ModBusTCPLen);
+
+						for(i = 0; i < u16ModBusTCPLen; i++)
+							ENNTRACE("%2.2x ", pSendBuf[i]);
+						ENNTRACE("\n");
+
+						returnCode = ENNModBus_TCP_Send(stDATAQ_FRAME.frame_net_info.u32Socket, pSendBuf, u16ModBusTCPLen);
+						if(ENN_SUCCESS != returnCode)
+						{
+							free(pSendBuf);
+							pSendBuf = NULL;
+						}
+						continue;
+					}
+					
+					pResData = ENNModBus_Serch_FunCode_Data(u8FunCode, u16RegAddr, u16RegNum, &u16DataLen);
+					ENNTRACE("%s, %d, %d\n",__FUNCTION__,__LINE__,u16DataLen);
+					if(NULL == pResData)
+					{
+						free(pBuf);
+						pBuf = NULL;
+
+						if(0x02 == u16DataLen)
+						{
+							u8ExceptionCode = 0x02;
+						}
+						else
+						{
+							u8ExceptionCode = 0x01;
+						}
+
+						u16Num = 2 + 1;
+						u16ModBusTCPLen = 7 + 1 + 1;
+						pSendBuf = (ENN_U8 *)malloc(u16ModBusTCPLen);
+						if(NULL == pSendBuf)
+						{
+							free(pBuf);
+							pBuf = NULL;
+							continue;
+							//return ENN_FAIL;
+						}
+						memcpy(pSendBuf, pData, 7);
+						free(pBuf);
+						pBuf = NULL;
+						pSendBuf[4] = (ENN_U8)(u16Num >> 8);
+						pSendBuf[5] = (ENN_U8)(u16Num & 0x00FF);
+						*(pSendBuf+7) = u8FunCode | 0x80;
+						*(pSendBuf+8) = u8ExceptionCode;
+						
+						ENNTRACE("%s, %d, %d\n",__FUNCTION__,__LINE__,u16ModBusTCPLen);
+
+						for(i = 0; i < u16ModBusTCPLen; i++)
+							ENNTRACE("%2.2x ", pSendBuf[i]);
+						ENNTRACE("\n");
+
+						returnCode = ENNModBus_TCP_Send(stDATAQ_FRAME.frame_net_info.u32Socket, pSendBuf, u16ModBusTCPLen);
+						if(ENN_SUCCESS != returnCode)
+						{
+							free(pSendBuf);
+							pSendBuf = NULL;
+						}
+						continue;
+						//return ENN_FAIL;
+					}
+					for(i = 0; i < u16DataLen; i++)
+						ENNTRACE("%2.2x ", pResData[i]);
+					ENNTRACE("\n");
+
+					u16Num = u16DataLen + 1 + 1 + 1;
+					u16ModBusTCPLen = 7 + 1 + 1 + u16DataLen;
+					ENNTRACE("%s, %d, %d\n",__FUNCTION__,__LINE__,u16ModBusTCPLen);
+					pSendBuf = (ENN_U8 *)malloc(u16ModBusTCPLen);
+					if(NULL == pSendBuf)
+					{
+						free(pBuf);
+						pBuf = NULL;
+						continue;
+						//return ENN_FAIL;
+					}
+					memcpy(pSendBuf, pData, 7);
+					free(pBuf);
+					pBuf = NULL;
+					pSendBuf[4] = (ENN_U8)(u16Num >> 8);
+					pSendBuf[5] = (ENN_U8)(u16Num & 0x00FF);
+					*(pSendBuf+7) = u8FunCode;
+					pSendBuf[8] = (ENN_U8)u16DataLen;
+					memcpy(pSendBuf+9, pResData, u16DataLen);
+					
+					ENNTRACE("%s, %d, %d\n",__FUNCTION__,__LINE__,u16ModBusTCPLen);
+
+					for(i = 0; i < u16ModBusTCPLen; i++)
+						ENNTRACE("%2.2x ", pSendBuf[i]);
+					ENNTRACE("\n");
+
+					returnCode = ENNModBus_TCP_Send(stDATAQ_FRAME.frame_net_info.u32Socket, pSendBuf, u16ModBusTCPLen);
+					if(ENN_SUCCESS != returnCode)
+					{
+						free(pSendBuf);
+						pSendBuf = NULL;
+					}
+					break;
+				case MB_FUNC_WRITE_SINGLE_COIL:
+					u16RegAddr = ((ENN_U16)(pData[Len++])) << 8;
+					u16RegAddr |= (ENN_U16)(pData[Len++]);
+					u16InputValue = ((ENN_U16)(pData[Len++])) << 8;
+					u16InputValue |= (ENN_U16)(pData[Len++]);
+
+					if((0x0000 != u16InputValue) && (0xFF00 != u16InputValue))
+					{
+						//0x03
+						u16Num = 2 + 1;
+						u16ModBusTCPLen = 7 + 1 + 1;
+						pSendBuf = (ENN_U8 *)malloc(u16ModBusTCPLen);
+						if(NULL == pSendBuf)
+						{
+							free(pBuf);
+							pBuf = NULL;
+							continue;
+							//return ENN_FAIL;
+						}
+						memcpy(pSendBuf, pData, 7);
+						free(pBuf);
+						pBuf = NULL;
+						pSendBuf[4] = (ENN_U8)(u16Num >> 8);
+						pSendBuf[5] = (ENN_U8)(u16Num & 0x00FF);
+						*(pSendBuf+7) = u8FunCode | 0x80;
+						*(pSendBuf+8) = 0x03;
+						
+						ENNTRACE("%s, %d, %d\n",__FUNCTION__,__LINE__,u16ModBusTCPLen);
+
+						for(i = 0; i < u16ModBusTCPLen; i++)
+							ENNTRACE("%2.2x ", pSendBuf[i]);
+						ENNTRACE("\n");
+
+						returnCode = ENNModBus_TCP_Send(stDATAQ_FRAME.frame_net_info.u32Socket, pSendBuf, u16ModBusTCPLen);
+						if(ENN_SUCCESS != returnCode)
+						{
+							free(pSendBuf);
+							pSendBuf = NULL;
+						}
+						break;
+					}
+
+					returnCode = ENNModBus_Write_Single_Coil(u16RegAddr, u16InputValue);
+					if(ENN_ERR_INVALID_FUNCODE == returnCode)
+					{
+						u16Num = 2 + 1;
+						u16ModBusTCPLen = 7 + 1 + 1;
+						pSendBuf = (ENN_U8 *)malloc(u16ModBusTCPLen);
+						if(NULL == pSendBuf)
+						{
+							free(pBuf);
+							pBuf = NULL;
+							continue;
+							//return ENN_FAIL;
+						}
+						memcpy(pSendBuf, pData, 7);
+						free(pBuf);
+						pBuf = NULL;
+						pSendBuf[4] = (ENN_U8)(u16Num >> 8);
+						pSendBuf[5] = (ENN_U8)(u16Num & 0x00FF);
+						*(pSendBuf+7) = u8FunCode | 0x80;
+						*(pSendBuf+8) = 0x01;
+						
+						ENNTRACE("%s, %d, %d\n",__FUNCTION__,__LINE__,u16ModBusTCPLen);
+
+						for(i = 0; i < u16ModBusTCPLen; i++)
+							ENNTRACE("%2.2x ", pSendBuf[i]);
+						ENNTRACE("\n");
+
+						returnCode = ENNModBus_TCP_Send(stDATAQ_FRAME.frame_net_info.u32Socket, pSendBuf, u16ModBusTCPLen);
+						if(ENN_SUCCESS != returnCode)
+						{
+							free(pSendBuf);
+							pSendBuf = NULL;
+						}
+					}
+					else if(ENN_ERR_INVALID_REG_ADDR == returnCode)
+					{
+						u16Num = 2 + 1;
+						u16ModBusTCPLen = 7 + 1 + 1;
+						pSendBuf = (ENN_U8 *)malloc(u16ModBusTCPLen);
+						if(NULL == pSendBuf)
+						{
+							free(pBuf);
+							pBuf = NULL;
+							continue;
+							//return ENN_FAIL;
+						}
+						memcpy(pSendBuf, pData, 7);
+						free(pBuf);
+						pBuf = NULL;
+						pSendBuf[4] = (ENN_U8)(u16Num >> 8);
+						pSendBuf[5] = (ENN_U8)(u16Num & 0x00FF);
+						*(pSendBuf+7) = u8FunCode | 0x80;
+						*(pSendBuf+8) = 0x02;
+						
+						ENNTRACE("%s, %d, %d\n",__FUNCTION__,__LINE__,u16ModBusTCPLen);
+
+						for(i = 0; i < u16ModBusTCPLen; i++)
+							ENNTRACE("%2.2x ", pSendBuf[i]);
+						ENNTRACE("\n");
+
+						returnCode = ENNModBus_TCP_Send(stDATAQ_FRAME.frame_net_info.u32Socket, pSendBuf, u16ModBusTCPLen);
+						if(ENN_SUCCESS != returnCode)
+						{
+							free(pSendBuf);
+							pSendBuf = NULL;
+						}
+					}
+					else if(ENN_SUCCESS == returnCode)
+					{
+						u16Num = 5 + 1;
+						u16ModBusTCPLen = 7 + 5;
+						pSendBuf = (ENN_U8 *)malloc(u16ModBusTCPLen);
+						if(NULL == pSendBuf)
+						{
+							free(pBuf);
+							pBuf = NULL;
+							continue;
+							//return ENN_FAIL;
+						}
+						memset(pSendBuf, 0, u16ModBusTCPLen);
+						memcpy(pSendBuf, pData, 7);
+						free(pBuf);
+						pBuf = NULL;
+						pSendBuf[4] = (ENN_U8)(u16Num >> 8);
+						pSendBuf[5] = (ENN_U8)(u16Num & 0x00FF);
+						memcpy(pSendBuf+7, pData+7, 5);
+						
+						ENNTRACE("%s, %d, %d\n",__FUNCTION__,__LINE__,u16ModBusTCPLen);
+
+						for(i = 0; i < u16ModBusTCPLen; i++)
+							ENNTRACE("%2.2x ", pSendBuf[i]);
+						ENNTRACE("\n");
+
+						returnCode = ENNModBus_TCP_Send(stDATAQ_FRAME.frame_net_info.u32Socket, pSendBuf, u16ModBusTCPLen);
+						if(ENN_SUCCESS != returnCode)
+						{
+							free(pSendBuf);
+							pSendBuf = NULL;
+						}
+					}
+					else
+					{
+						perror("mem malloc fail ");
+					}
+					
+					break;
+				case MB_FUNC_WRITE_MULTIPLE_REGISTERS:
+					u16RegAddr = ((ENN_U16)(pData[Len++])) << 8;
+					u16RegAddr |= (ENN_U16)(pData[Len++]);
+					
+					u16RegNum = ((ENN_U16)(pData[Len++])) << 8;
+					u16RegNum |= (ENN_U16)(pData[Len++]);
+					u8Bytes = pData[Len++];	
+					if((u16RegNum < 0x0001) || (u16RegNum > 0x007B) ||(u8Bytes != (u16RegNum * 2)))
+					{
+						//0x03
+						u16Num = 2 + 1;
+						u16ModBusTCPLen = 7 + 1 + 1;
+						pSendBuf = (ENN_U8 *)malloc(u16ModBusTCPLen);
+						if(NULL == pSendBuf)
+						{
+							free(pBuf);
+							pBuf = NULL;
+							continue;
+							//return ENN_FAIL;
+						}
+						memcpy(pSendBuf, pData, 7);
+						free(pBuf);
+						pBuf = NULL;
+						pSendBuf[4] = (ENN_U8)(u16Num >> 8);
+						pSendBuf[5] = (ENN_U8)(u16Num & 0x00FF);
+						*(pSendBuf+7) = u8FunCode | 0x80;
+						*(pSendBuf+8) = 0x03;
+						
+						ENNTRACE("%s, %d, %d\n",__FUNCTION__,__LINE__,u16ModBusTCPLen);
+
+						for(i = 0; i < u16ModBusTCPLen; i++)
+							ENNTRACE("%2.2x ", pSendBuf[i]);
+						ENNTRACE("\n");
+
+						returnCode = ENNModBus_TCP_Send(stDATAQ_FRAME.frame_net_info.u32Socket, pSendBuf, u16ModBusTCPLen);
+						if(ENN_SUCCESS != returnCode)
+						{
+							free(pSendBuf);
+							pSendBuf = NULL;
+						}
+						break;
+					}
+					
+					returnCode = ENNModBus_Write_Multiple_Register(u16RegAddr, u16RegNum, u8Bytes, pData);
+					if(ENN_ERR_INVALID_FUNCODE == returnCode)
+					{
+						u16Num = 2 + 1;
+						u16ModBusTCPLen = 7 + 1 + 1;
+						pSendBuf = (ENN_U8 *)malloc(u16ModBusTCPLen);
+						if(NULL == pSendBuf)
+						{
+							free(pBuf);
+							pBuf = NULL;
+							continue;
+							//return ENN_FAIL;
+						}
+						memcpy(pSendBuf, pData, 7);
+						free(pBuf);
+						pBuf = NULL;
+						pSendBuf[4] = (ENN_U8)(u16Num >> 8);
+						pSendBuf[5] = (ENN_U8)(u16Num & 0x00FF);
+						*(pSendBuf+7) = u8FunCode | 0x80;
+						*(pSendBuf+8) = 0x01;
+						
+						ENNTRACE("%s, %d, %d\n",__FUNCTION__,__LINE__,u16ModBusTCPLen);
+
+						for(i = 0; i < u16ModBusTCPLen; i++)
+							ENNTRACE("%2.2x ", pSendBuf[i]);
+						ENNTRACE("\n");
+
+						returnCode = ENNModBus_TCP_Send(stDATAQ_FRAME.frame_net_info.u32Socket, pSendBuf, u16ModBusTCPLen);
+						if(ENN_SUCCESS != returnCode)
+						{
+							free(pSendBuf);
+							pSendBuf = NULL;
+						}
+					}
+					else if(ENN_ERR_INVALID_REG_ADDR == returnCode)
+					{
+						u16Num = 2 + 1;
+						u16ModBusTCPLen = 7 + 1 + 1;
+						pSendBuf = (ENN_U8 *)malloc(u16ModBusTCPLen);
+						if(NULL == pSendBuf)
+						{
+							free(pBuf);
+							pBuf = NULL;
+							continue;
+							//return ENN_FAIL;
+						}
+						memcpy(pSendBuf, pData, 7);
+						free(pBuf);
+						pBuf = NULL;
+						pSendBuf[4] = (ENN_U8)(u16Num >> 8);
+						pSendBuf[5] = (ENN_U8)(u16Num & 0x00FF);
+						*(pSendBuf+7) = u8FunCode | 0x80;
+						*(pSendBuf+8) = 0x02;
+						
+						ENNTRACE("%s, %d, %d\n",__FUNCTION__,__LINE__,u16ModBusTCPLen);
+
+						for(i = 0; i < u16ModBusTCPLen; i++)
+							ENNTRACE("%2.2x ", pSendBuf[i]);
+						ENNTRACE("\n");
+
+						returnCode = ENNModBus_TCP_Send(stDATAQ_FRAME.frame_net_info.u32Socket, pSendBuf, u16ModBusTCPLen);
+						if(ENN_SUCCESS != returnCode)
+						{
+							free(pSendBuf);
+							pSendBuf = NULL;
+						}
+					}
+					else if(ENN_SUCCESS == returnCode)
+					{
+						u16Num = 5 + 1;
+						u16ModBusTCPLen = 7 + 5;
+						pSendBuf = (ENN_U8 *)malloc(u16ModBusTCPLen);
+						if(NULL == pSendBuf)
+						{
+							free(pBuf);
+							pBuf = NULL;
+							continue;
+							//return ENN_FAIL;
+						}
+						memset(pSendBuf, 0, u16ModBusTCPLen);
+						memcpy(pSendBuf, pData, 7);
+						free(pBuf);
+						pBuf = NULL;
+						pSendBuf[4] = (ENN_U8)(u16Num >> 8);
+						pSendBuf[5] = (ENN_U8)(u16Num & 0x00FF);
+						memcpy(pSendBuf+7, pData+7, 5);
+						
+						ENNTRACE("%s, %d, %d\n",__FUNCTION__,__LINE__,u16ModBusTCPLen);
+
+						for(i = 0; i < u16ModBusTCPLen; i++)
+							ENNTRACE("%2.2x ", pSendBuf[i]);
+						ENNTRACE("\n");
+
+						returnCode = ENNModBus_TCP_Send(stDATAQ_FRAME.frame_net_info.u32Socket, pSendBuf, u16ModBusTCPLen);
+						if(ENN_SUCCESS != returnCode)
+						{
+							free(pSendBuf);
+							pSendBuf = NULL;
+						}
+					}
+					else
+					{
+						perror("mem malloc fail ");
+					}
+					
+					ENNTRACE("%s, %d, %d, %d\n",__FUNCTION__,__LINE__,u16RegAddr, u16RegNum);
+					break;
+				case MB_FUNC_READ_HISTORY_DATA:
+					u16RegNum = ((ENN_U16)(pData[Len++])) << 8;
+					u16RegNum |= (ENN_U16)(pData[Len++]);
+
+					ENNTRACE("%s, %d, %d\n",__FUNCTION__,__LINE__,u16RegNum);
+					
+					pResData = (ENN_U8 *)malloc(u16RegNum);
+					if(NULL == pResData)
+					{
+						free(pBuf);
+						pBuf = NULL;
+						continue;
+						//return ENN_FAIL;
+					}
+					memset(pResData, 0, u16RegNum);
+					
+					returnCode = ENNModBus_Get_History_Data(pResData, u16RegNum, &u16DataLen);
+					ENNTRACE("%s, %d, %d, %d\n",__FUNCTION__,__LINE__,u16DataLen, returnCode);
+					if((ENN_SUCCESS != returnCode) || (0 == u16DataLen) || (NULL == pResData))
+					{
+						free(pResData);
+						pResData = NULL;
+						//continue;
+						free(pBuf);
+						pBuf = NULL;
+						continue;
+						//return ENN_FAIL;
+					}
+					
+					ENNTRACE("%s, %d, %d\n",__FUNCTION__,__LINE__,u16DataLen);
+					
+					u16Num = u16DataLen + 2 + 1 + 1;
+					u16ModBusTCPLen = 7 + 1 + 2 + u16DataLen;
+					pSendBuf = (ENN_U8 *)malloc(u16ModBusTCPLen);
+					if(NULL == pSendBuf)
+					{
+						free(pResData);
+						pResData = NULL;
+						free(pBuf);
+						pBuf = NULL;
+						continue;
+						//return ENN_FAIL;
+					}
+					memcpy(pSendBuf, pData, 7);
+					free(pBuf);
+					pBuf = NULL;
+					pSendBuf[4] = (ENN_U8)(u16Num >> 8);
+					pSendBuf[5] = (ENN_U8)(u16Num & 0x00FF);
+					*(pSendBuf+7) = u8FunCode;
+					pSendBuf[8] = (ENN_U8)(u16DataLen >> 8);
+					pSendBuf[9] = (ENN_U8)(u16DataLen & 0x00FF);
+					for(i = 0; i < u16DataLen; i++)
+						ENNTRACE("%2.2x ", pResData[i]);
+					ENNTRACE("\n");
+
+					memcpy(pSendBuf+10, pResData, u16DataLen);
+					free(pResData);
+					pResData = NULL;
+					
+					//ENNTRACE("%s, %d, %d\n",__FUNCTION__,__LINE__,returnCode);
+
+					for(i = 0; i < u16ModBusTCPLen; i++)
+						ENNTRACE("%2.2x ", pSendBuf[i]);
+					ENNTRACE("\n");
+
+					/*err = ENNSock_SocketSend(stDATAQ_FRAME.frame_net_info.u32Socket, pSendBuf, u16ModBusTCPLen, 1);
+					ENNTRACE("%s, %d, %d\n",__FUNCTION__,__LINE__,err);
+					perror("send history data: ");
+					if(err <= 0)
+					{
+						free(pSendBuf);
+						pSendBuf = NULL;
+					}*/
+					returnCode = ENNModBus_TCP_Send(stDATAQ_FRAME.frame_net_info.u32Socket, pSendBuf, u16ModBusTCPLen);
+					if(ENN_SUCCESS != returnCode)
+					{
+						free(pSendBuf);
+						pSendBuf = NULL;
+					}
+					break;
+				default:
+					free(pBuf);
+					pBuf = NULL;
+					break;
+			}
+		}
+	}
+	
+	return ENN_SUCCESS;
+}
+
+ENN_ErrorCode_t ENNModBus_TCP_Server(void)
+{
+	fd_set  fdsr;
+	ENN_S32 ret = 0;
+	ENN_S32 MaxSock = 0;
+	ENN_S32 ListeningSocket = 0;
+	ENN_S32 NewConnection = 0;
+	ENN_S32	RecvLen = 0;
+	ENN_S32 yes = 1;
+	ENN_S32 sin_size = 0;
+	struct 	timeval tv;
+	struct 	ENNSock_SocketAddr_In s_add;
+	struct 	ENNSock_SocketAddr_In c_add;
+	ENN_U8 buf[TCP_BUF_SIZE];
+	int i;
+	int num;
+	DATAQ_FRAME stDATAQ_FRAME;
+	ENN_ErrorCode_t returnCode = ENN_SUCCESS;	
+	
+	ENNTRACE("%s, %d\n",__FUNCTION__,__LINE__);
+	ListeningSocket = ENNSock_Socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+	if(-1 == ListeningSocket)
+	{
+	    ENNTRACE("socket fail ! \r\n");
+	    return ENN_FAIL;
+	}
+
+	ENNTRACE("socket ok !\r\n");
+
+	if(-1 == ENNSock_SetSockOpt(ListeningSocket, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(int)))
+	{
+		ENNTRACE("socket fail ! \r\n");
+	    return ENN_FAIL;
+	}
+
+	bzero(&s_add, sizeof(struct ENNSock_SocketAddr_In));
+	s_add.sin_family = AF_INET;
+	s_add.sin_port = (unsigned short)ENNSock_htons(SERVER_PORT);
+	s_add.sin_addr.s_addr = (unsigned int)ENNSock_htonl(INADDR_ANY);
+	memset((void *)(s_add.sin_zero), 0, sizeof(s_add.sin_zero));
+
+	if(-1 == ENNSock_Bind(ListeningSocket, (struct ENNSock_SocketAddr *)(&s_add), sizeof(struct ENNSock_SocketAddr)))
+	{
+		ENNTRACE("bind fail !\r\n");
+		return ENN_FAIL;
+	}
+	ENNTRACE("bind ok !\r\n");
+
+	if(-1 == ENNSock_Listen(ListeningSocket, MAXCLINE))
+	{
+	    ENNTRACE("listen fail !\r\n");
+	    return ENN_FAIL;
+	}
+	ENNTRACE("listen ok\r\n");
+
+	conn_amount =0;
+	sin_size = (ENN_S32)sizeof(c_add);
+	MaxSock = ListeningSocket;
+	/*maxfd = MAX(maxfd, ListeningSocket+1);*/
+
+	while(1)
+	{
+		//ENNTRACE("%s, %d\n",__FUNCTION__,__LINE__);
+		/*初始化文件描述符集合*/
+	    FD_ZERO(&fdsr); 					/*清除描述符集*/
+	    FD_SET(ListeningSocket, &fdsr); 	/*把sock_fd加入描述符集*/
+
+		/*超时的设定*/
+	    tv.tv_sec = 3;
+	    tv.tv_usec = 0;
+
+		/*添加活动的连接*/
+	    for(i=0; i<MAXCLINE; i++) 
+	    {
+			if(0 != fd[i])
+			{
+				FD_SET(fd[i], &fdsr);
+			}
+	    }
+		
+		//ENNTRACE("%s, %d\n",__FUNCTION__,__LINE__);
+	    
+		/*如果文件描述符中有连接请求 会做相应的处理，实现I/O的复用 多用户的连接通讯*/
+		ret = ENNSock_Select((ENN_S32)(MaxSock+1), (ENNSock_fd_set *)&fdsr, NULL, NULL, (ENNSock_Timeval *)&tv);
+		if(ret < 0) 		/*没有找到有效的连接 失败*/
+		{
+			ENNTRACE("	[%s %d select error!!]\r\n",__FUNCTION__, __LINE__);
+			break;
+		}
+		else if(0 == ret)	/* 指定的时间到*/
+		{
+			/*ENNTRACE("	[%s %d timeout!]\r\n",__FUNCTION__, __LINE__);*/
+			continue;
+		}
+		/*ENNTRACE("%s, %d\n",__FUNCTION__,__LINE__);*/
+
+		/*循环判断有效的连接是否有数据到达*/
+		for(i=0; i<conn_amount; i++)
+		{
+			if(FD_ISSET(fd[i], &fdsr))
+			{
+				memset((void *)buf, 0, sizeof(buf));
+				RecvLen = ENNSock_SocketRecv(fd[i], (void *)buf, sizeof(buf), 0);
+				if(RecvLen <= 0) /*客户端连接关闭，清除文件描述符集中的相应的位*/
+				{
+					/*ENNModBus_Tcp_Del_List(fd[i]);*/
+					
+					ENNTRACE("client[%d] close\n",i);
+					ENNSock_SocketClose(fd[i]);
+					FD_CLR(fd[i], &fdsr);
+					fd[i]=0;
+					conn_amount--;
+				}
+				else 	/*否则有相应的数据发送过来 ，进行相应的处理*/
+				{
+					/*RecvLen = ENNSock_SocketSend(fd[i], buf, RecvLen, 1);
+					if(RecvLen <= 0)
+					{
+						ENNTRACE("%s, %d, RecvLen = %d\n",__FUNCTION__,__LINE__,RecvLen);
+					}*/
+					ENNTRACE("%s, %d, RecvLen = %d\n",__FUNCTION__,__LINE__,RecvLen);
+					ENNTRACE("%s, %d, RecvLen = %d\n",__FUNCTION__,__LINE__,RecvLen);
+					if(RecvLen > 7)
+					{
+						memset((void *)&stDATAQ_FRAME, 0, sizeof(DATAQ_FRAME));
+						stDATAQ_FRAME.p_data = (ENN_U8 *)malloc(RecvLen);
+						if(NULL != stDATAQ_FRAME.p_data)
+						{
+							memset((void *)stDATAQ_FRAME.p_data, 0, (size_t)RecvLen);
+							memcpy((void *)stDATAQ_FRAME.p_data, buf, (size_t)RecvLen);
+							stDATAQ_FRAME.p_buf = stDATAQ_FRAME.p_data;
+							stDATAQ_FRAME.length = RecvLen;
+							stDATAQ_FRAME.frame_net_info.u32Socket = fd[i];
+							returnCode = ENNOS_SendMessage(gModBusTaskQueueID, (ENN_VOID *)&stDATAQ_FRAME);
+							ENNTRACE("%s, %d, returnCode = %d\n",__FUNCTION__,__LINE__,returnCode);
+						}
+					}
+			#if 0	/*test:    look back send buf*/
+					/*缓存接收到的数*/
+					ENNModBus_TCP_Receive(fd[i], buf, RecvLen);
+				#if 0
+					ENNTRACE("shanjianchao: %d\n", RecvLen);
+					ENNTRACE("shanjianchao: %s\n", buf);
+					int k=0;
+					for(k=0; k<RecvLen; k++)
+					{
+						ENNTRACE("buf[%d] = 0x%x\n", k, buf[k]);
+					}
+					if(RecvLen < TCP_BUF_SIZE)
+					{
+						memset(&buf[RecvLen],'\0',1);
+						ENNTRACE("client[%d] %d send:%s\n",i,RecvLen,buf);
+
+						//ENNModBus_TCP_Update_Data(fd[i], buf, RecvLen);
+					}
+				#endif
+					//200000000006050300010004
+					int k=0;
+					/*for(k=0; k<RecvLen; k++)
+					{
+						ENNTRACE("buf[%d] = 0x%2.2X\n", k, buf[k]);
+					}*/
+					memset((void *)SendBuf, 0, 17);
+					memcpy((void *)SendBuf, (void *)buf, 8);
+					SendBuf[4] = 0x00;
+					SendBuf[5] = 0x0B;
+					SendBuf[8] = 0x08;
+					if(count%2 == 0)
+					{
+						SendBuf[9] = 0x02;
+						SendBuf[10] = 0x2B;
+						SendBuf[11] = 0x41;
+						SendBuf[12] = 0x25;
+						SendBuf[13] = 0x24;
+						SendBuf[14] = 0xE1;
+						SendBuf[15] = 0xA0;
+						SendBuf[16] = 0x43;
+					}
+					else
+					{
+						SendBuf[9] = 0x09;
+						SendBuf[10] = 0x1A;
+						SendBuf[11] = 0x78;
+						SendBuf[12] = 0x90;
+						SendBuf[13] = 0x65;
+						SendBuf[14] = 0xF6;
+						SendBuf[15] = 0xB6;
+						SendBuf[16] = 0xD4;
+					}
+					num = send(fd[i], SendBuf, 17, 0);
+					ENNTRACE("num = %d\n", num);
+					count++;
+			#endif
+				}
+			}
+		}
+
+		if(FD_ISSET(ListeningSocket, &fdsr))
+		{
+			NewConnection = ENNSock_Accept(ListeningSocket,(struct ENNSock_SocketAddr *)(&c_add), &sin_size);
+			if(-1 == NewConnection)
+			{
+				ENNTRACE("	[%s %d accept error!]\r\n",__FUNCTION__, __LINE__);
+				continue;
+			}
+			ENNTRACE("%s, %d\n",__FUNCTION__,__LINE__);
+
+			/*ret = ENNModBus_Tcp_Add_List(NewConnection);*/
+
+			/*添加新的fd 到数组中 判断有效的连接数是否小于最大的连接数，如果小于的话，就把新的连接套接字加入集合*/
+			if(conn_amount < MAXCLINE)
+			{
+				for(i=0; i< MAXCLINE; i++)
+				{
+					if(0 == fd[i])
+					{
+						fd[i] = NewConnection;
+						break;
+					}
+				}
+				conn_amount++;
+				
+				ENNTRACE("new connection client[%d]%s:%d\n",conn_amount,ENNSock_Inet_ntoa(c_add.sin_addr),ENNSock_ntohs(c_add.sin_port));
+				if(NewConnection > MaxSock)
+				{
+					MaxSock = NewConnection;
+				}
+			}
+			else
+			{
+				ENNTRACE("max connections arrive ,exit\n");
+				send(NewConnection,"bye",4,0);
+				close(NewConnection);
+				continue;
+			}
+		}
+
+		//showclient();
+	}
+
+	for(i=0;i<MAXCLINE; i++)
+	{
+		if(0 != fd[i])
+		{
+			ENNSock_SocketClose(fd[i]);
+		}
+	}
+
+	return ENN_FAIL;
+
+	/*while(1)
+	{
+		sin_size = sizeof(struct ENNSock_SocketAddr_In);
+
+		NewConnection = ENNSock_Accept(ListeningSocket, (struct ENNSock_SocketAddr *)(&c_add), &sin_size);
+		if(-1 == NewConnection)
+		{
+		    ENNTRACE("accept fail !\r\n");
+		    return -1;
+		}
+		ENNTRACE("accept ok!\r\nServer start get connect from %#x : %#x\r\n",ENNSock_ntohl(c_add.sin_addr.s_addr), ENNSock_ntohs(c_add.sin_port));
+
+		recvfrom()
+		if(-1 == write(nfp,"hello,welcome to my server \r\n",32))
+		{
+		    ENNTRACE("write fail!\r\n");
+		    return -1;
+		}
+		ENNTRACE("write ok!\r\n");
+		close(NewConnection);
+	}*/
+}
+
+
+ENN_ErrorCode_t InitENNModBus_Task()
+{
+	ENNOS_TASK_t taskID = 0;
+	ENNOS_TASK_t taskMsgID = 0;
+	ENN_ErrorCode_t returnCode = ENN_SUCCESS;
+	
+	returnCode = ENNOS_CreateMessage(sizeof(DATAQ_FRAME), 100, ENNOS_MSG_CREATE_FIFO, &gModBusTaskQueueID);
+	if(ENN_SUCCESS != returnCode)
+	{
+		ENNTRACE("\nCreate MSG Queue fail!\n");
+		return returnCode;
+	}
+
+	returnCode = ENNOS_CreateTask("TCP_SERVER", ENNOS_TASK_PRIORITY_MIDDLE, 4*1024, &taskID, ENNOS_TASK_START, (void*)ENNModBus_TCP_Server, NULL);
+	if(ENN_SUCCESS != returnCode)
+	{
+		ENNTRACE("\nCreate TCP SERVER task fail!\n");
+		return returnCode;
+	}
+
+	ENNTRACE("%s, %d\n",__FUNCTION__,__LINE__);
+	returnCode = ENNOS_CreateTask("MSG_RX", ENNOS_TASK_PRIORITY_MIDDLE, 4*1024, &taskMsgID, ENNOS_TASK_START, (void*)ENNModBus_Msg_Rx, NULL);
+	if(ENN_SUCCESS != returnCode)
+	{
+		ENNTRACE("\nCreate TCP SERVER task fail!\n");
+		return returnCode;
+	}
+
+	return ENN_SUCCESS;
+}
+
+#if 0
+ENN_S32 ENNModBus_TCP_Server(void)
+{
+	fd_set  fdsr;
+	struct timeval tv;
+	int MaxSock = 0;
+	ENN_S32 ListeningSocket = 0;
+	ENN_S32 NewConnection = 0;
+	ENN_S32	RecvLen = 0;
+	int 	sin_size;
+	struct 	sockaddr_in s_add;
+	struct 	sockaddr_in c_add;
+	ENN_U8 buf[TCP_BUF_SIZE];
+	int yes = 1;
+	int ret;
+	int i;
+	
+	ListeningSocket = socket(AF_INET, SOCK_STREAM, 0);
+	if(-1 == ListeningSocket)
+	{
+	    ENNTRACE("socket fail ! \r\n");
+	    return -1;
+	}
+
+	ENNTRACE("socket ok !\r\n");
+
+	if(-1 == setsockopt(ListeningSocket, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(int)))
+	{
+		ENNTRACE("socket fail ! \r\n");
+	    return -1;
+	}
+
+	s_add.sin_family = AF_INET;
+	s_add.sin_addr.s_addr = htonl(INADDR_ANY);
+	s_add.sin_port = htons(SERVER_PORT);
+	memset(s_add.sin_zero, 0, sizeof(s_add.sin_zero));
+
+	if(-1 == bind(ListeningSocket, (struct sockaddr *)(&s_add), sizeof(struct sockaddr)))
+	{
+		ENNTRACE("bind fail !\r\n");
+		return -1;
+	}
+	ENNTRACE("bind ok !\r\n");
+
+	if(-1 == listen(ListeningSocket, MAXCLINE))
+	{
+	    ENNTRACE("listen fail !\r\n");
+	    return -1;
+	}
+	ENNTRACE("listen ok\r\n");
+
+	conn_amount =0;
+	sin_size = sizeof(c_add);
+	MaxSock = ListeningSocket;
+	//maxfd = MAX(maxfd, ListeningSocket+1);
+
+	while(1)
+	{
+		//初始化文件描述符集合
+	    FD_ZERO(&fdsr); //清除描述符集
+	    FD_SET(ListeningSocket, &fdsr); //把sock_fd加入描述符集
+
+		//超时的设定
+	    tv.tv_sec = 0;
+	    tv.tv_usec = 10000;
+
+		//添加活动的连接
+	    for(i=0; i<MAXCLINE; i++) 
+	    {
+			if(0 != fd[i])
+			{
+				FD_SET(fd[i], &fdsr);
+			}
+	    }
+	    
+		//如果文件描述符中有连接请求 会做相应的处理，实现I/O的复用 多用户的连接通讯
+		ret = select((MaxSock+1), &fdsr, NULL, NULL, &tv);
+		if(ret < 0) //没有找到有效的连接 失败
+		{
+			ENNTRACE("	[%s %d select error!!]\r\n",__FUNCTION__, __LINE__);
+			break;
+		}
+		else if(0 == ret)// 指定的时间到，
+		{
+			//ENNTRACE("	[%s %d timeout!]\r\n",__FUNCTION__, __LINE__);
+			continue;
+		}
+		ENNTRACE("%s, %d\n",__FUNCTION__,__LINE__);
+
+		//循环判断有效的连接是否有数据到达
+		for(i=0; i<conn_amount; i++)
+		{
+			if(FD_ISSET(fd[i], &fdsr))
+			{
+				memset((void *)buf, 0, sizeof(buf));
+				RecvLen = recv(fd[i], buf, sizeof(buf), 0);
+				if(RecvLen <= 0) //客户端连接关闭，清除文件描述符集中的相应的位
+				{
+					//ENNModBus_Tcp_Del_List(fd[i]);
+					
+					ENNTRACE("client[%d] close\n",i);
+					ENNSock_SocketClose(fd[i]);
+					FD_CLR(fd[i],&fdsr);
+					fd[i]=0;
+					conn_amount--;
+				}
+				else 	//否则有相应的数据发送过来 ，进行相应的处理
+				{
+					//缓存接收到的数据
+					if(RecvLen < TCP_BUF_SIZE)
+					memset(&buf[RecvLen],'\0',1);
+					ENNTRACE("client[%d] send:%s\n",i,buf);
+
+					//ENNModBus_TCP_Update_Data(fd[i], buf, RecvLen);
+				}
+			}
+		}
+
+		if(FD_ISSET(ListeningSocket, &fdsr))
+		{
+			NewConnection = accept(ListeningSocket,(struct sockaddr *)(&c_add), &sin_size);
+			if(-1 == NewConnection)
+			{
+				ENNTRACE("	[%s %d accept error!]\r\n",__FUNCTION__, __LINE__);
+				continue;
+			}
+			ENNTRACE("%s, %d\n",__FUNCTION__,__LINE__);
+
+			//ret = ENNModBus_Tcp_Add_List(NewConnection);
+
+			//添加新的fd 到数组中 判断有效的连接数是否小于最大的连接数，如果小于的话，就把新的连接套接字加入集合
+			if(conn_amount < MAXCLINE)
+			{
+				for(i=0; i< MAXCLINE; i++)
+				{
+					if(0 == fd[i])
+					{
+						fd[i] = NewConnection;
+						break;
+					}
+				}
+				conn_amount++;
+				
+				//ENNTRACE("new connection client[%d]%s:%d\n",conn_amount,ntoa(c_add.sin_addr),ntohs(c_add.sin_port));
+				if(NewConnection > MaxSock)
+				{
+					MaxSock = NewConnection;
+				}
+			}
+			else
+			{
+				ENNTRACE("max connections arrive ,exit\n");
+				send(NewConnection,"bye",4,0);
+				close(NewConnection);
+				continue;
+			}
+		}
+
+		//showclient();
+	}
+
+	for(i=0;i<MAXCLINE; i++)
+	{
+		if(0 != fd[i])
+		{
+			ENNSock_SocketClose(fd[i]);
+		}
+	}
+
+	return -1;
+
+	/*while(1)
+	{
+		sin_size = sizeof(struct ENNSock_SocketAddr_In);
+
+		NewConnection = ENNSock_Accept(ListeningSocket, (struct ENNSock_SocketAddr *)(&c_add), &sin_size);
+		if(-1 == NewConnection)
+		{
+		    ENNTRACE("accept fail !\r\n");
+		    return -1;
+		}
+		ENNTRACE("accept ok!\r\nServer start get connect from %#x : %#x\r\n",ENNSock_ntohl(c_add.sin_addr.s_addr), ENNSock_ntohs(c_add.sin_port));
+
+		recvfrom()
+		if(-1 == write(nfp,"hello,welcome to my server \r\n",32))
+		{
+		    ENNTRACE("write fail!\r\n");
+		    return -1;
+		}
+		ENNTRACE("write ok!\r\n");
+		close(NewConnection);
+	}*/
+}
+#endif
+
+#ifdef __cplusplus
+#if __cplusplus
+    }
+#endif /* __cpluscplus */
+#endif /* __cpluscplus */
+
+

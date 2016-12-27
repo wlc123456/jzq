@@ -1,0 +1,749 @@
+
+#define MAXCLINE 10
+
+#define MB_TCP_TID          0
+#define MB_TCP_PID          2
+#define MB_TCP_LEN          4
+#define MB_TCP_UID          6
+#define MB_TCP_FUNC         7
+
+#define MB_TCP_PROTOCOL_ID  0   /* 0 = Modbus Protocol */
+
+#define MB_TCP_ADU_EVENT_LEN 	2
+#define MB_TCP_ADU_PROTOCOL_LEN 2
+#define MB_TCP_ADU_DATALEN_LEN 	2
+#define MB_TCP_ADU_UNIT_LEN 	1
+
+
+
+#define MB_TCP_ADU_HEAD_LEN     7
+#define MB_TCP_ADU_SIZE_MAX     (MB_TCP_ADU_HEAD_LEN + 249)
+
+int fd[MAXCLINE]; //连接的fd
+
+int conn_amount; //当前的连接数
+
+TCP_DATA_LIST *gTCP_DATA_LIST_RECV_HEAD = NULL;
+TCP_DATA_LIST *gTCP_DATA_LIST_SEND_HEAD = NULL;
+
+ModbusMsg *gModbusMsg_Head = NULL;
+
+ENN_U16 gSTAR_ADDR = 0;
+
+
+#undef MAX
+#define MAX(x,y) ((x) > (y) ? (x) : (y))
+/*int max(int a, int b)
+{
+    int themax;
+
+    if(a > b)
+	{
+		themax = a;
+	}
+    else
+	{
+		themax = b;
+	}
+    return themax;
+}*/
+//0X01,0X02,0X03,0X05,0X10	
+static xMBFunctionHandler xFuncHandlers[] = 
+{
+    {MB_FUNC_READ_COILS, 				eMBFuncReadCoils},
+    {MB_FUNC_READ_DISCRETE_INPUTS, 		eMBFuncReadDiscreteInputs},
+	{MB_FUNC_READ_HOLDING_REGISTER, 	eMBFuncReadHoldingRegister},
+	{MB_FUNC_WRITE_SINGLE_COIL, 		eMBFuncWriteCoil},
+	{MB_FUNC_WRITE_MULTIPLE_REGISTERS, 	eMBFuncWriteMultipleHoldingRegister},
+};
+
+#define NumFuncHandler    (sizeof(xFuncHandlers)/sizeof(xMBFunctionHandler))
+
+static xMBFunctionHandler* GetFuncHandler(ModbusMsg *mbMsg)
+{
+	ENN_U8 mbFunctionCode;
+	ENN_U32 i;
+	xMBFunctionHandler *functionHandler = NULL;
+
+	mbFunctionCode = mbMsg->mbFunctionCode;
+	
+	for(i=0;i<NumFuncHandler;i++)
+	{
+		if(xFuncHandlers[i].ucFunctionCode == mbFunctionCode)
+		{
+			functionHandler = &xFuncHandlers[i];
+		}
+	}
+
+	return functionHandler;
+}
+
+void showclient()
+{
+	int i;
+	printf("client amount:%d\n", conn_amount);
+	for(i=0; i<MAXCLINE; i++)
+	{
+		printf("[%d]:%d ",i,fd[i]);
+	}
+	printf("\n\n");
+}
+
+const ENN_U16 wCRCTalbeAbs[] =
+{
+0x0000, 0xCC01, 0xD801, 0x1400, 
+0xF001, 0x3C00, 0x2800, 0xE401, 
+0xA001, 0x6C00, 0x7800, 0xB401, 
+0x5000, 0x9C01, 0x8801, 0x4400, 
+};
+
+ENN_U16 CRC16(ENN_U8 *pData, ENN_U16 DataLen)
+{
+    ENN_U16 wCRC = 0xFFFF;
+    ENN_U16 i;
+    ENN_U8 u8Data;
+
+    for(i = 0; i < DataLen; i++)
+    {
+        u8Data = *pData++;
+        wCRC = wCRCTalbeAbs[(u8Data ^ wCRC) & 15] ^ (wCRC >> 4);
+        wCRC = wCRCTalbeAbs[((u8Data >> 4) ^ wCRC) & 15] ^ (wCRC >> 4);
+    }
+
+    return wCRC;
+}
+
+
+int ENNModBus_TCP_Data_Add(ModbusMsg *mbMsg)
+{
+	ModbusMsg *pModbusMsg_Temp = NULL;
+	
+	if(NULL == mbMsg)
+	{
+		return -1;
+	}
+
+	if(NULL == gModbusMsg_Head)
+	{
+		gModbusMsg_Head = mbMsg;
+	}
+	else
+	{
+		pModbusMsg_Temp = gModbusMsg_Head;
+		while(NULL != pModbusMsg_Temp->next)
+		{
+			pModbusMsg_Temp = pModbusMsg_Temp->next;
+		}
+
+		pModbusMsg_Temp->next = mbMsg;
+	}
+
+	return 0;
+}
+
+
+
+TCP_DATA_LIST *ENNModBus_TCP_Search(int Socket)
+{
+	TCP_DATA_LIST *pTCP_DATA_LIST_Temp = NULL;
+
+	pTCP_DATA_LIST_Temp = gTCP_DATA_LIST_RECV_HEAD;
+	while(NULL != pTCP_DATA_LIST_Temp)
+	{
+		if(Socket == pTCP_DATA_LIST_Temp->s32Socket)
+		{
+			return pTCP_DATA_LIST_Temp;
+		}
+		pTCP_DATA_LIST_Temp = pTCP_DATA_LIST_Temp->next;
+	}
+	
+	return NULL;
+}
+
+int ENNModBus_TCP_Update_Data(int Socket, ENN_U8 *pData, ENN_S32 Len)
+{
+	ENN_U16 needLen;
+	ENN_U16 usPID;
+	ENN_U16 usTID;
+	ENN_U8 *frame_data = NULL;
+	ModbusMsg *receivedMsg;
+	TCP_DATA_LIST *pTCP_DATA_LIST_Temp = NULL;
+	TCP_DATA_LIST *pTCP_DATA_LIST_Add = NULL;
+
+	pTCP_DATA_LIST_Temp = ENNModBus_Tcp_Search(Socket);
+	if(NULL != pTCP_DATA_LIST_Temp)
+	{
+		pTCP_DATA_LIST_Temp->u16Len += (ENN_U16)Len;
+		memcpy((void *)(pTCP_DATA_LIST_Temp->aData + pTCP_DATA_LIST_Temp->u16Pos), (void *)pData, (size_t)Len);
+		pTCP_DATA_LIST_Temp->u16Pos += Len;
+
+		if(pTCP_DATA_LIST_Temp->u16Len >= MB_TCP_FUNC)
+		{
+			needLen = (ENN_U16)(pData[MB_TCP_LEN]) << 8;
+            needLen |= (ENN_U16)pData[MB_TCP_LEN + 1];
+
+			if(needLen == (pTCP_DATA_LIST_Temp->u16Len - MB_TCP_UID))
+			{
+				//缓存
+				usTID = (ENN_U16)(pData[MB_TCP_TID]) << 8;
+				usTID |= (ENN_U16)pData[MB_TCP_TID + 1];
+				
+				usPID = (ENN_U16)(pData[MB_TCP_PID]) << 8;
+                usPID |= (ENN_U16)pData[MB_TCP_PID + 1];
+
+				receivedMsg = (ModbusMsg *)malloc(sizeof(ModbusMsg));
+				if(NULL == receivedMsg)
+				{
+					ENNModBus_TCP_Del_List(Socket);
+					return -1;
+				}
+				memset((void *)receivedMsg, 0, sizeof(ModbusMsg));
+				receivedMsg->u32Socket 		= Socket;
+				receivedMsg->u16MBTID 		= usTID;
+				receivedMsg->u8MBAddr 		= pData[MB_TCP_UID];
+				receivedMsg->u8MBFunCode 	= pData[MB_TCP_FUNC];
+				receivedMsg->u16RegAddr 	= (ENN_U16)(pData[MB_TCP_FUNC + 1]) << 8;
+				receivedMsg->u16RegAddr 	|= (ENN_U16)pData[MB_TCP_FUNC + 2];
+				receivedMsg->u16RegNum 		= (ENN_U16)(pData[MB_TCP_FUNC + 3]) << 8;
+				receivedMsg->u16RegNum 		|= (ENN_U16)pData[MB_TCP_FUNC + 4];
+				receivedMsg->next = NULL;				
+
+				ENNModBus_TCP_Del_List(Socket);
+				
+				ENNModBus_TCP_Data_Add(receivedMsg);
+				//ENNModBus_TCP_Execute(receivedMsg);
+
+				return 0;
+			}
+		}
+	}
+	else
+	{
+		if(Len >= MB_TCP_UID)
+		{
+			needLen = (ENN_U16)(pData[MB_TCP_LEN]) << 8;
+            needLen |= (ENN_U16)pData[MB_TCP_LEN + 1];
+
+			if(needLen == (Len - MB_TCP_UID))
+			{
+				//缓存
+				usTID = (ENN_U16)(pData[MB_TCP_TID]) << 8;
+				usTID |= (ENN_U16)pData[MB_TCP_TID + 1];
+				
+				usPID = (ENN_U16)(pData[MB_TCP_PID]) << 8;
+                usPID |= (ENN_U16)pData[MB_TCP_PID + 1];
+
+				receivedMsg = (ModbusMsg *)malloc(sizeof(ModbusMsg));
+				if(NULL == receivedMsg)
+				{
+					ENNModBus_TCP_Del_List(Socket);
+				}
+				memset((void *)receivedMsg, 0, sizeof(ModbusMsg));
+				receivedMsg->u32Socket 		= Socket;
+				receivedMsg->u16MBTID 		= usTID;
+				receivedMsg->u8MBAddr 		= pData[MB_TCP_UID];
+				receivedMsg->u8MBFunCode 	= pData[MB_TCP_FUNC];
+				receivedMsg->u16RegAddr 	= (ENN_U16)(pData[MB_TCP_FUNC + 1]) << 8;
+				receivedMsg->u16RegAddr 	|= (ENN_U16)pData[MB_TCP_FUNC + 2];
+				receivedMsg->u16RegNum 		= (ENN_U16)(pData[MB_TCP_FUNC + 3]) << 8;
+				receivedMsg->u16RegNum 		|= (ENN_U16)pData[MB_TCP_FUNC + 4];
+
+				ENNModBus_TCP_Data_Add(receivedMsg);
+
+				return 0;
+			}
+		}
+		
+		pTCP_DATA_LIST_Add = (TCP_DATA_LIST *)malloc(sizeof(TCP_DATA_LIST));
+		if(NULL == pTCP_DATA_LIST_Add)
+		{
+			return -1;
+		}
+		memset((void *)pTCP_DATA_LIST_Add, 0, sizeof(TCP_DATA_LIST));
+		pTCP_DATA_LIST_Add->u32Socket = Socket;
+		pTCP_DATA_LIST_Add->next = NULL;
+		memset((void *)pTCP_DATA_LIST_Temp->aData, 0, TCP_BUF_SIZE);
+		memcpy((void *)(pTCP_DATA_LIST_Temp->aData), (void *)pData, (size_t)Len);
+		pTCP_DATA_LIST_Temp->u16Len = Len; 
+		pTCP_DATA_LIST_Temp->u16Pos = Len;
+
+		if(NULL == gTCP_DATA_LIST_RECV_HEAD)
+		{
+			gTCP_DATA_LIST_RECV_HEAD = pTCP_DATA_LIST_Add;
+		}
+		else
+		{
+			pTCP_DATA_LIST_Temp = gTCP_DATA_LIST_RECV_HEAD;
+			while(NULL != pTCP_DATA_LIST_Temp->next)
+			{
+				pTCP_DATA_LIST_Temp = pTCP_DATA_LIST_Temp->next;
+			}
+
+			pTCP_DATA_LIST_Temp->next = pTCP_DATA_LIST_Add;
+		}
+	}
+	
+	return 0;
+}
+
+
+int ENNModBus_TCP_Del_List(int Socket)
+{
+	TCP_DATA_LIST *pTCP_DATA_LIST_Temp = NULL;
+	TCP_DATA_LIST *pTCP_DATA_LIST_Temp1 = NULL;
+
+	if(NULL != gTCP_DATA_LIST_RECV_HEAD)
+	{
+		pTCP_DATA_LIST_Temp = gTCP_DATA_LIST_RECV_HEAD;
+		while((Socket != pTCP_DATA_LIST_Temp->u32Socket) && (NULL != pTCP_DATA_LIST_Temp->next))
+		{
+			pTCP_DATA_LIST_Temp1 = pTCP_DATA_LIST_Temp;
+			pTCP_DATA_LIST_Temp = pTCP_DATA_LIST_Temp->next;
+		}
+
+		if(Socket == pTCP_DATA_LIST_Temp->u32Socket)
+		{
+			if(pTCP_DATA_LIST_Temp == gTCP_DATA_LIST_RECV_HEAD)
+			{
+				gTCP_DATA_LIST_RECV_HEAD = gTCP_DATA_LIST_RECV_HEAD->next;
+			}
+			else
+			{
+				pTCP_DATA_LIST_Temp1 = pTCP_DATA_LIST_Temp;
+			}
+
+			free(pTCP_DATA_LIST_Temp);
+			pTCP_DATA_LIST_Temp = NULL;
+		}
+	}
+
+	return 0;
+}
+
+
+int ENNModBus_TCP_Add_List(int Socket)
+{
+	TCP_DATA_LIST *pTCP_DATA_LIST_Add = NULL;
+	TCP_DATA_LIST *pTCP_DATA_LIST_Temp = NULL;
+
+	if(NULL != ENNModBus_TCP_Search(Socket))
+	{
+		return 0;
+	}
+	
+	pTCP_DATA_LIST_Add = (TCP_DATA_LIST *)malloc(sizeof(TCP_DATA_LIST));
+	if(NULL == pTCP_DATA_LIST_Add)
+	{
+		return -1;
+	}
+	memset((void *)pTCP_DATA_LIST_Add, 0, sizeof(TCP_DATA_LIST));
+	pTCP_DATA_LIST_Add->u32Socket = Socket;
+	pTCP_DATA_LIST_Add->next = NULL;
+
+	if(NULL == gTCP_DATA_LIST_RECV_HEAD)
+	{
+		gTCP_DATA_LIST_RECV_HEAD = pTCP_DATA_LIST_Add;
+	}
+	else
+	{
+		pTCP_DATA_LIST_Temp = gTCP_DATA_LIST_RECV_HEAD;
+		while(NULL != pTCP_DATA_LIST_Temp->next)
+		{
+			pTCP_DATA_LIST_Temp = pTCP_DATA_LIST_Temp->next;
+		}
+
+		pTCP_DATA_LIST_Temp->next = pTCP_DATA_LIST_Add;
+	}
+	
+	return 0;
+}
+
+int ENNModBus_TCP_Server(void)
+{
+	fd_set  fdsr;
+	struct timeval tv;
+	int MaxSock = 0;
+	ENN_S32 ListeningSocket = 0;
+	ENN_S32 NewConnection = 0;
+	ENN_S32	RecvLen = 0;
+	int 	sin_size;
+	struct 	ENNSock_SocketAddr_In s_add;
+	struct 	ENNSock_SocketAddr_In c_add;
+	ENN_U8 buf[TCP_BUF_SIZE];
+	int yes = 1;
+	int ret;
+	int i;
+	
+	ListeningSocket = ENNSock_Socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+	if(-1 == ListeningSocket)
+	{
+	    printf("socket fail ! \r\n");
+	    return -1;
+	}
+
+	printf("socket ok !\r\n");
+
+	if(-1 == ENNSock_SetSockOpt(ListeningSocket, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(int)))
+	{
+		printf("socket fail ! \r\n");
+	    return -1;
+	}
+
+	bzero(&s_add, sizeof(struct ENNSock_SocketAddr_In));
+	s_add.sin_family = AF_INET;
+	s_add.sin_addr.s_addr = ENNSock_htonl(INADDR_ANY);
+	s_add.sin_port = ENNSock_htons(SERVER_PORT);
+	memset(s_add.sin_zero,'\0',sizeof(s_add.sin_zero));
+
+	if(-1 == ENNSock_Bind(ListeningSocket, (struct ENNSock_SocketAddr *)(&s_add), sizeof(struct ENNSock_SocketAddr)))
+	{
+		printf("bind fail !\r\n");
+		return -1;
+	}
+	printf("bind ok !\r\n");
+
+	if(-1 == ENNSock_Listen(ListeningSocket, MAXCLINE))
+	{
+	    printf("listen fail !\r\n");
+	    return -1;
+	}
+	printf("listen ok\r\n");
+
+	conn_amount =0;
+	sin_size = sizeof(c_add);
+	MaxSock = ListeningSocket;
+	//maxfd = MAX(maxfd, ListeningSocket+1);
+
+	while(1)
+	{
+		//初始化文件描述符集合
+	    FD_ZERO(&fdsr); //清除描述符集
+	    FD_SET(ListeningSocket, &fdsr); //把sock_fd加入描述符集
+
+		//超时的设定
+	    tv.tv_sec = 10;
+	    tv.tv_usec = 0;
+
+		//添加活动的连接
+	    for(i=0; i<MAXCLINE; i++) 
+	    {
+			if(0 != fd[i])
+			{
+				FD_SET(fd[i], &fdsr);
+			}
+	    }
+	    
+		//如果文件描述符中有连接请求 会做相应的处理，实现I/O的复用 多用户的连接通讯
+		ret = ENNSock_Select(MaxSock+1, &fdsr, NULL, NULL, &tv);
+		if(ret < 0) //没有找到有效的连接 失败
+		{
+			printf("	[%s %d select error!!]\r\n",__FUNCTION__, __LINE__);
+			break;
+		}
+		else if(0 == ret)// 指定的时间到，
+		{
+			printf("	[%s %d timeout!]\r\n",__FUNCTION__, __LINE__);
+			continue;
+		}
+
+		//循环判断有效的连接是否有数据到达
+		for(i=0; i<conn_amount; i++)
+		{
+			if(FD_ISSET(fd[i], &fdsr))
+			{
+				memset((void *)buf, 0, sizeof(buf));
+				RecvLen = ENNSock_SocketRecv(fd[i], buf, sizeof(buf), 0);
+				if(RecvLen <= 0) //客户端连接关闭，清除文件描述符集中的相应的位
+				{
+					//ENNModBus_Tcp_Del_List(fd[i]);
+					
+					printf("client[%d] close\n",i);
+					ENNSock_SocketClose(fd[i]);
+					FD_CLR(fd[i],&fdsr);
+					fd[i]=0;
+					conn_amount--;
+				}
+				else 	//否则有相应的数据发送过来 ，进行相应的处理
+				{
+					//缓存接收到的数据
+					if(RecvLen < TCP_BUF_SIZE)
+					memset(&buf[RecvLen],'\0',1);
+					printf("client[%d] send:%s\n",i,buf);
+
+					ENNModBus_TCP_Update_Data(fd[i], buf, RecvLen);
+				}
+			}
+		}
+
+		if(FD_ISSET(ListeningSocket, &fdsr))
+		{
+			NewConnection = ENNSock_Accept(ListeningSocket,(struct ENNSock_SocketAddr *)(&c_add), &sin_size);
+			if(-1 == NewConnection)
+			{
+				printf("	[%s %d accept error!]\r\n",__FUNCTION__, __LINE__);
+				continue;
+			}
+
+			//ret = ENNModBus_Tcp_Add_List(NewConnection);
+
+			//添加新的fd 到数组中 判断有效的连接数是否小于最大的连接数，如果小于的话，就把新的连接套接字加入集合
+			if(conn_amount < MAXCLINE)
+			{
+				for(i=0; i< MAXCLINE; i++)
+				{
+					if(0 == fd[i])
+					{
+						fd[i] = NewConnection;
+						break;
+					}
+				}
+				conn_amount++;
+				
+				printf("new connection client[%d]%s:%d\n",conn_amount,ENNSock_Inet_ntoa(c_add.sin_addr),ENNSock_ntohs(c_add.sin_port));
+				if(NewConnection > MaxSock)
+				{
+					MaxSock = NewConnection;
+				}
+			}
+			else
+			{
+				printf("max connections arrive ,exit\n");
+				send(NewConnection,"bye",4,0);
+				close(NewConnection);
+				continue;
+			}
+		}
+
+		//showclient();
+	}
+
+	for(i=0;i<MAXCLINE; i++)
+	{
+		if(0 != fd[i])
+		{
+			ENNSock_SocketClose(fd[i]);
+		}
+	}
+
+	return -1;
+
+	/*while(1)
+	{
+		sin_size = sizeof(struct ENNSock_SocketAddr_In);
+
+		NewConnection = ENNSock_Accept(ListeningSocket, (struct ENNSock_SocketAddr *)(&c_add), &sin_size);
+		if(-1 == NewConnection)
+		{
+		    printf("accept fail !\r\n");
+		    return -1;
+		}
+		printf("accept ok!\r\nServer start get connect from %#x : %#x\r\n",ENNSock_ntohl(c_add.sin_addr.s_addr), ENNSock_ntohs(c_add.sin_port));
+
+		recvfrom()
+		if(-1 == write(nfp,"hello,welcome to my server \r\n",32))
+		{
+		    printf("write fail!\r\n");
+		    return -1;
+		}
+		printf("write ok!\r\n");
+		close(NewConnection);
+	}*/
+}
+
+
+
+UART_STATUS aUART_STATUS[UART_CHANNEL_MAX_NUM] = {UART_IDEL, UART_IDEL, 
+											  UART_IDEL, UART_IDEL,
+											  UART_IDEL, UART_IDEL, 
+											  UART_IDEL, UART_IDEL};
+
+MBMsg_TCP_HEAD TCP_Msg_Info[10];
+static ENN_U8 Req_Count = 0;
+
+
+Slave_List *gSlave_List_Head = NULL;
+Master_List stMaster_List;
+
+PL_RetCode ENNModBus_Addr_Map(ModbusMsg *pModbusMsg_Temp)
+{
+	Slave_List *pSlave_List_Temp = NULL;
+	ENN_U8 	u8UARTCh = 0;
+	ENN_U16 u16RegNum1 = 0;
+	ENN_U16 u16RegAddr1 = 0;
+	ENN_U16 u16RegNum2 = 0;
+	ENN_U16 u16RegAddr2 = 0;
+	ENN_U16 u16StarAddr = gSTAR_ADDR;
+	int i = 0;
+
+	if(NULL == pModbusMsg_Temp)
+	{
+		return PL_FAILURE;
+	}
+
+	memset((void *)&stMaster_List, 0, sizeof(Master_List));
+	stMaster_List.u32Socket 	= pModbusMsg_Temp->u32Socket;
+	stMaster_List.u16MBTID 		= pModbusMsg_Temp->u16MBTID;
+	stMaster_List.u8MBAddr 		= pModbusMsg_Temp->u8MBAddr;
+	stMaster_List.u8MBFunCode 	= pModbusMsg_Temp->u8MBFunCode;
+	stMaster_List.u16RegNum 	= pModbusMsg_Temp->u16RegNum;
+	
+	u16RegAddr1 = pModbusMsg_Temp->u16RegAddr;	//请求的逻辑寄存器地址
+	u16RegNum1 = pModbusMsg_Temp->u16RegNum;
+
+	pSlave_List_Temp = gSlave_List_Head;
+	while(NULL != pSlave_List_Temp)
+	{
+		u16RegAddr2 = pSlave_List_Temp->u16Reg_Addr;	//物理寄存器地址
+		u16RegNum2 = pSlave_List_Temp->u16Reg_Num;
+
+		if(u16RegAddr1 < u16StarAddr + u16RegNum2)
+		{
+			while(u16RegNum2 < u16RegNum1)
+			{
+				u8UARTCh = pSlave_List_Temp->u8UART_Channel;
+				while(UART_BUSY == aUART_STATUS[u8UARTCh])
+				{
+					continue;
+					sleep(100);
+				}
+				
+				//uart send msg
+				aUART_STATUS[u8UARTCh] = UART_BUSY;
+				ENNModBus_Packet_Data_To_UART(pSlave_List_Temp->u8Slave_Addr, pModbusMsg_Temp->u8MBFunCode, u16RegAddr2, u16RegNum2);
+				pModbusMsg_Temp->u16RegAddr += u16RegNum2;
+				pModbusMsg_Temp->u16RegNum -= u16RegNum2;
+				
+				u16RegNum1 = pModbusMsg_Temp->u16RegNum;
+				
+				pSlave_List_Temp = pSlave_List_Temp->next;
+				u16RegAddr2 = pSlave_List_Temp->u16Reg_Addr;	//物理寄存器地址
+				u16RegNum2 = pSlave_List_Temp->u16Reg_Num;
+			}
+
+			u8UARTCh = pSlave_List_Temp->u8UART_Channel;
+			while(UART_BUSY == aUART_STATUS[u8UARTCh])
+			{
+				continue;
+				sleep(100);
+			}
+			
+			//uart send msg
+			aUART_STATUS[u8UARTCh] = UART_BUSY;
+			
+			ENNModBus_Packet_Data_To_UART(pSlave_List_Temp->u8Slave_Addr, u16RegAddr2, u16RegNum1);
+
+			return PL_SUCCESS;
+		}
+		else
+		{
+			pSlave_List_Temp = pSlave_List_Temp->next;
+			u16StarAddr += u16RegNum2;
+		}
+	}
+
+	return PL_SUCCESS;
+}
+
+
+ENN_S32 ENNModBus_Packet_Data_To_TCP(UART_CHANNEL eChannel, ENN_U8 *pData, ENN_U16 Len)
+{
+	ENN_U8 *pTemp = NULL;
+	ENN_U8 *pSend_Msg = NULL;
+	ENN_U16 u16DataLen = 0;
+	ENN_U16 u16Len = 0;
+	ENN_U16 u16CRC = 0;
+
+	if((NULL == pData) || (0 == Len))
+	{
+		return -1;
+	}
+
+	//check CRC16
+
+	pTemp = pData;
+	u16Len = Len - 1 - 2 + MB_TCP_ADU_HEAD_LEN;
+	u16DataLen = u16Len - MB_TCP_UID;
+	pSend_Msg = (ENN_U8 *)malloc(u16Len);
+	if(NULL == pSend_Msg)
+	{
+		return -1;
+	}
+	memset((void *)pSend_Msg, 0, u16Len); 
+
+	memcpy((void *)pSend_Msg, (void *)&(TCP_Msg_HEAD[eChannel].u16MBTID), MB_TCP_ADU_EVENT_LEN);
+	memcpy((void *)(pSend_Msg+MB_TCP_LEN), (void *)&u16DataLen, MB_TCP_ADU_DATALEN_LEN);
+	memcpy((void *)(pSend_Msg+MB_TCP_UID), (void *)&(TCP_Msg_HEAD[eChannel].u8MBAddr), MB_TCP_ADU_UNIT_LEN);
+	
+	memcpy((void *)(pSend_Msg+MB_TCP_FUNC), (void *)pData, u16Len-MB_TCP_ADU_HEAD_LEN);
+
+	//socket
+}
+
+ENN_S32 ENNModBus_Packet_Data_To_UART(ENN_U8 MBAddr, ENN_U8 FunCode, ENN_U16 RegAddr, ENN_U16 RegNum)
+{
+	ENN_U8 *pTemp = NULL;
+	ENN_U8 *pSend_Msg = NULL;
+	ENN_U16 u16Len = 0;
+	ENN_U16 u16CRC = 0;
+
+	u16Len = 8;
+	pSend_Msg = (ENN_U8 *)malloc(u16Len);
+	if(NULL == pSend_Msg)
+	{
+		return -1;
+	}
+	memset((void *)pSend_Msg, 0, u16Len);
+
+	*pSend_Msg = MBAddr;
+	*(pSend_Msg + 1) = FunCode;
+
+	u16CRC = CRC16(pSend_Msg, (u16Len - 2));
+	pSend_Msg[u16Len-2] = u16CRC >> 8;
+    pSend_Msg[u16Len-2+1] = u16CRC & 0x00FF;
+
+	return 0;
+}
+
+
+PL_RetCode ENNModBus_TCP_Execute(void)
+{
+	ModbusMsg *pModbusMsg_Temp = NULL;
+	ModbusMsg *pModbusMsg_Temp1 = NULL;
+	ModbusMsg *pModbusMsg_Temp2 = NULL;
+	ENN_U8 i = 0;
+	UART_CHANNEL eChannel = UART_CHANNEL_0;
+	PL_RetCode RetCode = PL_SUCCESS;
+
+	pModbusMsg_Temp = gModbusMsg_Head;
+	while(NULL != pModbusMsg_Temp)
+	{
+		RetCode = ENNModBus_Addr_Map(pModbusMsg_Temp);
+		/*while((0 == stMaster_List.u16RegNum)&& 
+		   (stMaster_List.u16RegNum != stMaster_List.u16Len))
+		{
+			sleep(100);
+			continue;
+		}*/
+		//等待信号量
+		pModbusMsg_Temp = pModbusMsg_Temp->next;
+		//释放信号量
+	}
+
+	return PL_SUCCESS;
+}
+
+
+PL_RetCode ENNModBus_UART_Execute(void)
+{
+	//等待信号量
+	while((0 == stMaster_List.u16RegNum)&& 
+		   (stMaster_List.u16RegNum != stMaster_List.u16Len))
+	{
+		sleep(100);
+		continue;
+	}
+
+	//process msg
+	//释放信号量
+}
+

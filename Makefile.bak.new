@@ -1,0 +1,93 @@
+PWD = $(shell pwd)
+
+#CROSS_COMPILE=arm-none-linux-gnueabi-
+CROSS_COMPILE=/opt/freescale/usr/local/gcc-4.6.2-glibc-2.13-linaro-multilib-2011.12/fsl-linaro-toolchain/bin/arm-fsl-linux-gnueabi-
+
+CC=$(CROSS_COMPILE)gcc
+AR=$(CROSS_COMPILE)ar 
+LD=$(CROSS_COMPILE)ld
+STRIP=$(CROSS_COMPILE)strip
+CXX=$(CROSS_COMPILE)g++
+export CROSS_COMPILE CC AR LD
+
+ENNLIB = $(PWD)/lib
+
+OUTPUTDIR=$(PWD)/output
+OUTOBJDIR=$(OUTPUTDIR)/obj
+OUTBINDIR=$(OUTPUTDIR)/bin
+OUTLIBDIR=$(OUTPUTDIR)/lib
+
+#INSTALLDIR=/home/ives/freescale/dataconcentrator/rootfs_qt/rootfs/home
+#UBISDIR=/home/ives/freescale/dataconcentrator/rootfs_qt/rootfs
+
+#INSTALLDIR=/home/wanglongchang/freescale/dataconcentrator/rootfs/home
+#UBISDIR=/home/wanglongchang/freescale/dataconcentrator/rootfs
+
+INSTALLDIR=/work/imx6/rootfs/home
+UBISDIR=/work/imx6/rootfs/home
+
+
+ENNOBJ = $(OUTBINDIR)/ennjzq
+CFG_FLAGS+= -g -D_GNU_SOURCE
+
+
+# Users can override those variables from the command line.
+CFG_FLAGS  +=  -Wall -fno-strict-aliasing -std=gnu99 -g -O2  
+CFG_FLAGS  +=  -I./modbus/include -I./102dpa/include -I./driver/include -I./protocol/include -I/usr/local/sqlite/include
+
+ENNLIBS = $(ENNLIB)/libapp.a \
+					$(ENNLIB)/libdriver.a \
+					$(ENNLIB)/lib102.a \
+					$(ENNLIB)/libprotocol.a				
+					
+COMPILE = $(CC) $(CFG_FLAGS) -Wall -O2 -fPIC -o "$(OUTOBJDIR)/$(*F).o" -c "$<"
+#COMPILE = $(CC) $(CFG_FLAGS) -Wall -fPIC -o "$(OUTOBJDIR)/$(*F).o" -c "$<"
+
+DRIVER = ./driver
+MODBUS = ./modbus
+102DPA = ./102dpa
+PROTOCOL = ./protocol
+
+MODULES = $(MODBUS) $(102DPA) $(DRIVER) $(PROTOCOL)
+#MODULES = $(MODBUS)
+
+CLEANMODULE = $(addsuffix _RM, $(MODULES))
+
+include $(PWD)/src/Makefile
+
+all:$(MODULES) $(OUTOBJDIR) $(ENNAPP_OBJ)
+#$(EXEC):$(MODULES) $(OUTOBJDIR) $(ENNAPP_OBJ)
+#	@echo $(ENNLIB)
+#	@echo $(ENNLIBS)
+#	$(CC) $(CFG_FLAGS) $(ENNAPP_OBJ) $(ENNLIBS) -o $(ENNOBJ) -L/usr/local/sqlite/lib -lsqlite3 -lpthread -lrt -Wl -lm --hash-style=sysv
+
+	$(CC) $(CFG_FLAGS) $(ENNAPP_OBJ) $(ENNLIBS) -o $(ENNOBJ) -L/usr/local/sqlite/lib -lsqlite3 -lpthread -lrt -Wl -lm
+#	$(CC) $(CFG_FLAGS) -lpthread -lrt -Wl -lm -o $(ENNOBJ) $(ENNAPP_OBJ) $(ENNLIBS) 
+#	$(STRIP) $(CYHI)
+
+$(OUTOBJDIR):
+	@echo make dir in outbojdir...
+	mkdir -p "$(OUTPUTDIR)"
+	mkdir -p "$(OUTLIBDIR)"
+	mkdir -p "$(OUTOBJDIR)"
+	mkdir -p "$(OUTBINDIR)"
+
+clean:$(CLEANMODULE) 
+	@rm -rf $(OUTPUTDIR)
+.PHONY: all clean $(MODULES) $(CLEANMODULE)
+
+$(MODULES):
+	@echo now jump into next directory....
+	$(MAKE) --directory=$@
+	
+$(CLEANMODULE):
+	$(MAKE) --directory=$(subst _RM, ,$@) clean
+
+install:
+#rm -fr ../img/hicyhaisiapp
+#cp $(OUTPUTDIR)/bin/hicyhaisiapp ../img/ 
+	cp -rf ./output/bin/ennjzq $(INSTALLDIR)
+	chmod 777 $(INSTALLDIR)/ennjzq
+rom:
+#	mkfs.jffs2 -e 16KiB -r ./output/bin -o ../cystapp.jffs2 -n
+	mkfs.ubifs -r $(UBISDIR) -m 2048 -e 129024 -c 400 -o rootfs.ubifs

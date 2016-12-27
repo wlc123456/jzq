@@ -1,0 +1,77 @@
+PWD = $(shell pwd)
+
+CROSS_COMPILE=arm-none-linux-gnueabi-
+CC=$(CROSS_COMPILE)gcc
+AR=$(CROSS_COMPILE)ar 
+LD=$(CROSS_COMPILE)ld
+STRIP=$(CROSS_COMPILE)strip
+CXX=$(CROSS_COMPILE)g++
+export CROSS_COMPILE CC AR LD
+
+ENNLIB = $(PWD)/lib
+
+OUTPUTDIR=$(PWD)/output
+OUTOBJDIR=$(OUTPUTDIR)/obj
+OUTBINDIR=$(OUTPUTDIR)/bin
+OUTLIBDIR=$(OUTPUTDIR)/lib
+
+INSTALLDIR=/home/jerry/workspace/sourcecode/rootfs_qt/rootfs/home
+UBISDIR=/home/jerry/workspace/sourcecode/rootfs_qt/rootfs
+
+ENNOBJ = $(OUTBINDIR)/test_uart
+CFG_FLAGS+= -g -D_GNU_SOURCE
+
+
+# Users can override those variables from the command line.
+CFG_FLAGS  +=  -Wall -fno-strict-aliasing -std=gnu99 -g -O2  
+CFG_FLAGS  +=  -I./modbus/include -I./driver/include
+
+ENNLIBS = $(ENNLIB)/libapp.a \
+					$(ENNLIB)/libdriver.a				
+					
+COMPILE = $(CC) $(CFG_FLAGS) -Wall -O2 -fPIC -o "$(OUTOBJDIR)/$(*F).o" -c "$<"
+
+DRIVER = ./driver
+MODBUS = ./modbus
+
+MODULES = $(MODBUS) $(DRIVER)
+#MODULES = $(MODBUS)
+
+CLEANMODULE = $(addsuffix _RM, $(MODULES))
+
+include $(PWD)/src/Makefile
+
+all:$(MODULES) $(OUTOBJDIR) $(ENNAPP_OBJ)
+#$(EXEC):$(MODULES) $(OUTOBJDIR) $(ENNAPP_OBJ)
+#	@echo $(ENNLIB)
+#	@echo $(ENNLIBS)
+	$(CC) $(CFG_FLAGS) $(ENNAPP_OBJ) $(ENNLIBS) -o $(ENNOBJ) -lpthread -lrt -Wl -lm 
+#	$(CC) $(CFG_FLAGS) -lpthread -lrt -Wl -lm -o $(ENNOBJ) $(ENNAPP_OBJ) $(ENNLIBS) 
+#	$(STRIP) $(CYHI)
+
+$(OUTOBJDIR):
+	@echo make dir in outbojdir...
+	mkdir -p "$(OUTPUTDIR)"
+	mkdir -p "$(OUTLIBDIR)"
+	mkdir -p "$(OUTOBJDIR)"
+	mkdir -p "$(OUTBINDIR)"
+
+clean:$(CLEANMODULE) 
+	@rm -rf $(OUTPUTDIR)
+.PHONY: all clean $(MODULES) $(CLEANMODULE)
+
+$(MODULES):
+	@echo now jump into next directory....
+	$(MAKE) --directory=$@
+	
+$(CLEANMODULE):
+	$(MAKE) --directory=$(subst _RM, ,$@) clean
+
+install:
+#rm -fr ../img/hicyhaisiapp
+#cp $(OUTPUTDIR)/bin/hicyhaisiapp ../img/ 
+	cp -rf ./output/bin/test_uart $(INSTALLDIR)
+	chmod 777 $(INSTALLDIR)/test_uart
+rom:
+#	mkfs.jffs2 -e 16KiB -r ./output/bin -o ../cystapp.jffs2 -n
+	mkfs.ubifs -r $(UBISDIR) -m 2048 -e 129024 -c 400 -o rootfs.ubifs
